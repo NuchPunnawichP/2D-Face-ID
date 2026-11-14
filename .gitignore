@@ -1,0 +1,10 @@
+.build/
+.swiftpm/
+scripts/.venv/
+models/
+*.mlpackage
+*.mlmodelc
+pam/*.so
+pam/*.o
+pam/test_pam
+.DS_Store
