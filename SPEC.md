@@ -153,15 +153,16 @@ Run on 2026-11-14 on branch `claude/faceauth-macos-prototype-82f9cd`. Local comm
 | Check | Command | Result |
 |---|---|---|
 | Build | `swift build` and `swift build -c release` | Both complete with no errors. |
-| Unit tests | `./scripts/test.sh` (`swift test` plus framework search paths for the Command Line Tools; A4) | 69 tests in 12 suites passed. 6 recorded-fixture tests were skipped because no fixtures exist yet. |
+| Unit tests | `./scripts/test.sh` (`swift test` plus framework search paths for the Command Line Tools; A4) | 76 tests in 13 suites passed. 6 recorded-fixture tests were skipped because no fixtures exist yet. An earlier run failed `closedForExactlyEightFramesCounts`; the baseline-frame bug behind it is fixed. |
 | Formal model | `python3 formal/verify_model.py` | "R10 and R11 satisfied in model. Exhausted 3875 reachable states." Exit 0. |
 | Seeded fault | `python3 formal/verify_model.py --faulty` | R10 violated with a counterexample: Success at tick 51. Exit 1, as expected. |
-| PAM module | `make -C pam test` | 14/14 checks passed, including the hanging verifier killed at 2.00 s (`timeout=2`) and at 10.03 s (default). |
+| PAM module | `make -C pam test` | 16/16 checks passed, including the hanging verifier killed at 2.02 s (`timeout=2`) and at 10.01 s (default), and a symlinked binary and a `/../` path refused. |
 | Model | `scripts/.venv/bin/python -I scripts/convert_model.py` | SHA-256 matches the pinned value. Core ML vs PyTorch cosine 1.00000. |
-| Model runtime | `faceauth self-test` (release build) | 128-d embedding, L2 norm 1.0000, 2.4 ms per embedding, load 0.08 s. |
+| Model | first conversion attempts | Failed: the TorchScript graph has `prim::If` train/eval branches. Fixed by scripting and freezing the wrapper. |
+| Model runtime | `faceauth self-test` (release build) | 128-d embedding, L2 norm 1.0000, 2.4–5.5 ms per embedding, load 0.08–0.09 s. |
 | HUD snapshots | `faceauth hud-snapshots docs/hud` | 10 PNGs written. Reduce Motion check: no animations with it on; pulse and shake present with it off. |
-| HUD live | `faceauth hud-demo` (3 runs) | On screen 0.103 s and 0.105 s after process start on warm launches; 0.711 s on the first launch after a rebuild. Collapse 0.92–0.94 s after the result. Frontmost app unchanged. |
-| Error paths | `FACEAUTH_STORE_DIR=… faceauth verify --no-hud` with a synthetic store | No config, wrong model, config 644, enrollment 644 and directory 755 each exit 2 with a fix-it message, before the camera opens. |
+| HUD live | `faceauth hud-demo` (4 runs) | First attempt hung: the window `animator()` frame animation never ran; replaced with `setFrame(animate:)`. On screen 0.088–0.105 s after process start on warm launches; 0.711 s on the first launch after a rebuild. Collapse 0.92–0.94 s after the result. Frontmost app unchanged. In `verify`, the HUD was fully expanded 0.424 s after process start. |
+| Error paths | `FACEAUTH_STORE_DIR=… faceauth verify --no-hud` with a synthetic store | No config, wrong model, config 644, enrollment 644, directory 755 and a tampered config (threshold −0.99, motion off) each exit 2 with a fix-it message, before the camera opens. |
 
 **Model mapping, abstractions and bounds.** See `formal/README.md`.
 - One tick is 0.1 s, so the deadline is tick 50 (inclusive).
@@ -174,7 +175,10 @@ Run on 2026-11-14 on branch `claude/faceauth-macos-prototype-82f9cd`. Local comm
 **Interpretations made during implementation.** These do not change the contract.
 - **Deadline:** a frame that arrives after t0 + 5.0 s is not evaluated, so it cannot produce Success. The "same frame" ordering rule therefore applies only to a frame at exactly 5.0 s.
 - **Motion check:** "inter-ocular-normalized" positions are centred on the eye midpoint and rotated to the eye line, so moving, tilting or zooming a flat photo produces no motion.
-- **Calibration:** `calibrate` also measures the head-turn sign (`leftYawSign`) and the motion threshold. R13 allows calibration to tune numeric thresholds.
+- **Calibration:** `calibrate` also measures the head-turn sign (`leftYawSign`) and the motion threshold. R13 allows calibration to tune numeric thresholds. The spec says a recorded fixture fixes the sign; that fixture test exists but is skipped until you record it.
+- **Clock:** the code uses the CoreMedia host clock (`CMClockGetHostTimeClock`), not `ContinuousClock`. Both are monotonic, but the host clock matches the camera frame timestamps. That the frame timestamps really are on the host clock is assumed, not verified.
+- **Decision vs. termination time:** the decision uses frame capture time; a frame captured after t0 + 5.0 s never counts. The fallback timer gives in-flight frames 0.3 s, so the process always reaches a decision by about t0 + 5.3 s of wall time.
+- **Stored settings:** `config.json` values are range-checked on load (exit 2 if out of range), and the threshold must be in [0.2, 0.99]. This hardens the "invalid input behaviour" rule after the review.
 
 | ID | Status | Exhaustive or bounded | Implementation evidence | Formal evidence | Outstanding gap |
 |---|---|---|---|---|---|
@@ -183,20 +187,20 @@ Run on 2026-11-14 on branch `claude/faceauth-macos-prototype-82f9cd`. Local comm
 | R3 | passed tests | bounded (synthetic) | `GateTests` (0 faces, 2 faces, quality, IoU, gap) | — | No recorded `two-faces` fixture yet |
 | R4 | passed tests | — | `AlignmentTests` (eyes land within 1 px; inverse); model output parity | — | Not checked on a live face |
 | R5 | passed | — | Conversion log, pinned SHA-256, parity 1.00000; README records source and license | — | — |
-| R6 | partially verified | — | `StoreTests` (0700/0600, round trip, only `enrollment.json` written, 5 + mean) | — | Live `enroll` not run (needs your face) |
-| R7 | passed tests (synthetic) | bounded | `BlinkTests` (incl. the rev-3 regression `constantLowEarNeverBlinks`) | — | Recorded `blink`/`open`/`photo` fixtures missing |
+| R6 | partially verified | — | `StoreTests` and `HardeningTests` (0700/0600, round trip, only `enrollment.json` written, exactly 5 + mean, dimension must match the model) | — | Live `enroll` not run (needs your face) |
+| R7 | passed tests (synthetic) | bounded | `BlinkTests` (incl. the rev-3 regression `constantLowEarNeverBlinks` and `slowDriftThroughMiddleBandIsNotABlink`) | — | Recorded `blink`/`open`/`photo` fixtures missing; a tilted photo may fake a blink (review finding 3, untested) |
 | R8 | passed tests (synthetic) | bounded | `TurnTests` (left/right, 3-frame hold, wrong direction, sign) | Wrong turn modelled | Yaw sign on this camera not yet measured |
 | R9 | passed tests (synthetic) | bounded | `MotionTests` (static, translated, zoomed photo rejected; live accepted) | — | Recorded `photo` fixture and live calibration missing |
 | R10 | satisfied in model; passed tests | exhaustive (model, 3875 states); kernel grid | `VerifySessionTests`, `VerifyKernelTests.exhaustive` | `formal/verify_model.py` exit 0; `--faulty` gives a counterexample | Live end-to-end verify not run |
 | R11 | satisfied in model; passed tests | exhaustive (model) | `tickFiresDeadlineWithoutFrames`, `frameAfterDeadlineIsNotEvaluated`; 3 s camera-start limit in `FramePipeline.first` | No non-final state past tick 50; no deadlock | 3 s camera limit not exercised at runtime |
-| R12 | passed tests + runtime (error paths) | — | Exit-code tests; runtime exit 2 paths listed above; usage errors exit 2 | — | Exit 0/1 not observed live |
-| R13 | unrun | — | `calibrate` implemented | — | Needs you, live and with a phone photo; the README threshold row is empty |
-| R14 | partially verified | — | `hud-demo`: notch frame 360×120 at top centre, focus unchanged, warm 0.10 s | — | First launch after a rebuild took 0.71 s (> 0.5 s). Over a full-screen app and on an external display: not tested. The frontmost app during the test was `loginwindow`, so the screen may have been locked. |
+| R12 | passed tests + runtime (error paths) | — | Exit-code tests; runtime exit 2 paths listed above; usage errors exit 2; Core ML and camera failures now throw → exit 2 (review finding 4) | — | Exit 0/1 not observed live; camera-failure path not exercised at runtime |
+| R13 | unrun | — | `calibrate` implemented; it requires ≥ 20 frames per phase (review finding 12) | — | Needs you, live and with a phone photo; the README threshold row is empty |
+| R14 | partially verified | — | `hud-demo`: notch frame 360×120 at top centre, focus unchanged, on screen in 0.09–0.11 s (warm); `verify` and `enroll` now show the HUD before loading the model (review finding 6) | — | First launch after a rebuild took 0.71 s (> 0.5 s). Over a full-screen app and on an external display: not tested. The frontmost app during the test was `loginwindow`, so the screen may have been locked. |
 | R15 | passed | — | `docs/hud/*.png` for all states, notch and pill | — | — |
 | R16 | passed tests | — | `VerifyControllerTests` (a throwing sink gives the same outcomes); `--no-hud` path; no-GUI fallback via `GUISession` | — | Not run over SSH |
 | R17 | passed (demo) | — | `hud-demo`: collapse 0.92–0.94 s after the result (≤ 1.0 s) | — | Tight margin; not measured in a live verify |
 | R18 | passed | — | `hud-snapshots` animation check | — | Not observed live with the setting on |
-| R19 | passed tests | — | `make -C pam test` 14/14: exit 0 → SUCCESS; 1, 2, hang (2 s and default 10 s), unsafe, missing or relative path → AUTH_ERR | — | Not loaded into the real `sudo` |
+| R19 | passed tests | — | `make -C pam test` 16/16: exit 0 → SUCCESS; 1, 2, hang (2 s and default 10 s), world-writable, symlink, `/../`, missing or relative path → AUTH_ERR | — | Not loaded into the real `sudo`; the root-only parent-directory check is not testable without root |
 | R20 | unrun | — | `pam/install.sh` (only `sudo_local`, prints the `/etc/pam.d/sudo` checksum before and after) and `uninstall.sh`; recovery in the README | — | Needs your OK to run with sudo |
 | R21 | passed | — | Unit tests use synthetic and recorded landmark data, never the camera | — | Recorded fixtures still to be added |
 | R22 | passed (review) | — | README sections: setup, usage, threshold table, model and license, limitations | — | Threshold value not filled in yet |
@@ -224,4 +228,27 @@ make -C pam test
 .build/release/faceauth hud-demo
 ```
 
-**Independent review.** (pending)
+**Independent review.** A separate agent that did not write the code reviewed `git diff 8045213..HEAD` against this spec. It was given the spec and the diff, not my conclusions. I checked each of its 12 findings against the code.
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | Security rests on user-writable files: config tunables, user model and cache, enrollment | high | **Partly fixed.** Config is range-checked; the installed root-owned model is used exclusively and compiled fresh. **Still open:** the enrollment is user-writable, so malware running as the user could enroll another face for `sudo`. Closing this needs a root-owned enrollment copy, which is a design change that needs a new spec revision. |
+| 2 | Recorded fixtures absent; the yaw sign comes from calibrate, not a fixture | medium | **Open** (needs you): see Outstanding gaps. |
+| 3 | A tilted static photo may fake a blink or turn | medium | **Open** (untested; spec gap). README corrected; it no longer claims tilting is cancelled. |
+| 4 | Embedding and camera errors gave exit 1, not 2 | medium | **Fixed.** |
+| 5 | Model output dimension not checked; not exactly 5 embeddings | low–medium | **Fixed** and tested. |
+| 6 | HUD shown only after the model and camera load | medium | **Fixed.** |
+| 7 | Ticker vs. in-flight frame near the deadline; clock type | low | **Fixed** with a 0.3 s grace; the clock is documented above. |
+| 8 | Camera stop delayed the exit after the HUD collapse | low | **Fixed** (camera stops at the decision). |
+| 9 | Stray backup and marker files in `/etc/pam.d`; uninstall could wipe user lines | low–medium | **Fixed** (state kept in `/usr/local/share/faceauth`; uninstall removes only our line). |
+| 10 | PAM `stat` follows symlinks; parent directories not checked | low | **Fixed** and tested (unprivileged part). |
+| 11 | Middle-band frames did not count toward the 8-frame blink limit | low | **Fixed** and tested. |
+| 12 | `calibrate` did not enforce n ≥ 20 | low | **Fixed.** |
+
+**Outstanding gaps.** These need you, the live camera or sudo, so I could not run them.
+- **Live camera runs:** `enroll`, `calibrate` (choose and record the threshold) and `verify` (exit 0 for you; exit 1 for a phone photo).
+- **Fixtures:** record the six fixtures in `Tests/FaceAuthCoreTests/Fixtures/README.md`, then rerun `./scripts/test.sh` so the skipped R3/R7/R8/R9 tests run. Add a tilted-photo recording.
+- **R2:** deny camera permission once and check for exit 2.
+- **R14:** check the HUD over a full-screen app and on an external display.
+- **R20 / A2:** run `pam/install.sh` (asks for sudo) with a `sudo -s` shell open, then test `sudo -k; sudo true`.
+- **Finding 1:** decide whether to add a root-owned enrollment for `sudo` (spec revision 4).
