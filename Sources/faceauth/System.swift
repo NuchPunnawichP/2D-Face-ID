@@ -58,11 +58,15 @@ final class RemoteSource: FrameSource, @unchecked Sendable {
 
     func start() async throws {
         signal(SIGPIPE, SIG_IGN) // a dead helper gives EPIPE, not a crash
-        let stream = AsyncThrowingStream<HelperFrame, Error> { c in
+        // Keep only the newest frames: stale ones are discarded anyway (bounded memory).
+        let stream = AsyncThrowingStream<HelperFrame, Error>(bufferingPolicy: .bufferingNewest(32)) { c in
             lock.withLock { continuation = c }
         }
         iterator = stream.makeAsyncIterator()
         do { try process.run() } catch { throw Failure("Cannot start the capture helper: \(error.localizedDescription)") }
+        let w = toHelper.fileHandleForWriting.fileDescriptor
+        _ = fcntl(w, F_SETNOSIGPIPE, 1)
+        _ = fcntl(w, F_SETFL, fcntl(w, F_GETFL) | O_NONBLOCK) // a stuck helper cannot block root
         let fd = fromHelper.fileHandleForReading.fileDescriptor
         let dim = dimension
         Thread.detachNewThread { [self] in
@@ -103,22 +107,37 @@ final class RemoteSource: FrameSource, @unchecked Sendable {
         SourceFrame(frame: hf.frame) { hf.embedding }
     }
 
-    func next() async throws -> SourceFrame? {
+    private func nextRaw() async throws -> SourceFrame? {
         guard var it = iterator else { return nil }
         defer { iterator = it }
         return try await it.next().map(wrap)
     }
 
+    func next() async throws -> SourceFrame? {
+        if lock.withLock({ stopping }) { return nil }
+        return try await withTimeout(Self.frameGapSeconds) { try await self.nextRaw() }
+    }
+
+    /// The helper also has to start, load the model and open the camera, so
+    /// it gets a longer limit than the local 3 s.
+    static let helperStartSeconds = 10.0
+    /// After the first frame, no frame for this long means the helper is stuck.
+    static let frameGapSeconds = 3.0
+
     func first(timeout: Double) async throws -> SourceFrame {
+        try await withTimeout(max(timeout, Self.helperStartSeconds)) { try await self.nextRaw() }
+    }
+
+    private func withTimeout(_ seconds: Double, _ body: @escaping @Sendable () async throws -> SourceFrame?) async throws -> SourceFrame {
         try await withThrowingTaskGroup(of: SourceFrame?.self) { g in
-            g.addTask { try await self.next() }
+            g.addTask { try await body() }
             g.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1e9))
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
                 return nil
             }
             defer { g.cancelAll() }
             guard let r = try await g.next(), let value = r else {
-                throw CaptureError.noFrames(seconds: timeout)
+                throw CaptureError.noFrames(seconds: seconds)
             }
             return value
         }
@@ -186,7 +205,7 @@ func runSystem(command: String, opts: Options) async throws -> Int32 {
         return Exit.match
     }
     let exe = try requireInstalled()
-    let embedder = try Embedder.load() // the installed, root-owned model (fresh compile)
+    let embedder = try Embedder.loadInstalled()
     guard let dim = embedder.dimension else { throw Failure("The face model has no embedding output.") }
     let store = try SystemStore.store(forUID: ctx.uid)
     func secureRootOwned(_ path: String) { _ = chown(path, 0, 0) }
@@ -243,7 +262,7 @@ func dropPrivilegesForHelper(_ args: [String]) {
 /// the HUD commands it receives on stdin. Only the built-in camera is used.
 func runCaptureHelper(ui: UI) async throws -> Int32 {
     signal(SIGPIPE, SIG_IGN)
-    let embedder = try Embedder.load()
+    let embedder = try Embedder.loadInstalled() // never a user-writable model
     let pipe = FramePipeline(builtInOnly: true) // R31
 
     // Commands from root.
@@ -255,10 +274,12 @@ func runCaptureHelper(ui: UI) async throws -> Int32 {
             case .scanning(let t): ui.show(.scanning(t))
             case .enroll(let s, let n, let t): ui.show(.enroll(step: s, of: n, t))
             case .finish(let ok, let t):
-                pipe.stop()
+                // Show the result and let the HUD collapse before exiting; the
+                // frame loop keeps running (root discards its output) until then.
                 let sem = DispatchSemaphore(value: 0)
                 Task { await ui.finish(ok ? .success(t) : .failure(t)); sem.signal() }
                 sem.wait()
+                pipe.stop()
                 exit(Exit.match)
             case .stop:
                 pipe.stop()

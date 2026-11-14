@@ -28,7 +28,7 @@ if sudo test -d /var/db/faceauth; then
     echo "Root-owned sudo enrollments in /var/db/faceauth:"
     sudo find /var/db/faceauth -mindepth 1 -print
     printf "Delete /var/db/faceauth and everything in it? [y/N] "
-    read -r answer
+    read -r answer || answer=""
     case "$answer" in
         y|Y|yes|YES) sudo rm -rf /var/db/faceauth; echo "Deleted /var/db/faceauth." ;;
         *) echo "Kept /var/db/faceauth (delete later with: sudo rm -rf /var/db/faceauth)." ;;

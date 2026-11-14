@@ -177,7 +177,8 @@ int faceauth_run(const char *path, const struct passwd *pw, int timeout_s, const
         int devnull = open("/dev/null", O_RDONLY);
         if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
         /* Close every other descriptor above 3. */
-        for (int fd = 4; fd < 256; fd++) close(fd);
+        int maxfd = getdtablesize();
+        for (int fd = 4; fd < maxfd; fd++) close(fd);
         char home[1024], user[256], logname[256];
         snprintf(home, sizeof home, "HOME=%s", pw->pw_dir);
         snprintf(user, sizeof user, "USER=%s", pw->pw_name);

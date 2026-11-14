@@ -13,33 +13,65 @@ public final class Embedder: @unchecked Sendable {
     private let ciContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
     private var cropBuffer: CVPixelBuffer?
 
-    /// The root-owned model next to a root-owned binary (installed for sudo).
-    /// When it exists, it is the only model used and user locations are ignored.
-    public static func installedModelURL() -> URL? {
-        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let model = exe.deletingLastPathComponent().appendingPathComponent("../share/faceauth/MobileFaceNet.mlpackage").standardized
-        func rootOwned(_ p: String) -> Bool {
+    /// The running executable, symlinks resolved.
+    static var executableURL: URL? { Bundle.main.executableURL?.resolvingSymlinksInPath() }
+
+    /// True if `path` and every directory above it are owned by root, not
+    /// writable by group or others, and not symlinks.
+    static func rootChainOK(_ path: String) -> Bool {
+        var p = path
+        while true {
             var st = stat()
-            return lstat(p, &st) == 0 && st.st_uid == 0 && (st.st_mode & 0o022) == 0
+            guard lstat(p, &st) == 0, st.st_uid == 0, (st.st_mode & 0o022) == 0,
+                  (st.st_mode & S_IFMT) != S_IFLNK else { return false }
+            if p == "/" { return true }
+            p = (p as NSString).deletingLastPathComponent
+            if p.isEmpty { return false }
         }
-        guard rootOwned(exe.path), rootOwned(model.path),
-              rootOwned(model.deletingLastPathComponent().path) else { return nil }
-        return model
     }
 
-    /// Where the model is looked for, in order.
+    /// True if every file and directory inside `dir` is root-owned and not writable by others.
+    static func rootTreeOK(_ dir: String) -> Bool {
+        guard let e = FileManager.default.enumerator(atPath: dir) else { return false }
+        for case let rel as String in e {
+            var st = stat()
+            let p = (dir as NSString).appendingPathComponent(rel)
+            guard lstat(p, &st) == 0, st.st_uid == 0, (st.st_mode & 0o022) == 0,
+                  (st.st_mode & S_IFMT) != S_IFLNK else { return false }
+        }
+        return true
+    }
+
+    /// The installed .mlpackage (input to `install-model`), next to the installed binary.
+    static func installedPackageURL() -> URL? {
+        executableURL.map {
+            $0.deletingLastPathComponent().appendingPathComponent("../share/faceauth/MobileFaceNet.mlpackage").standardized
+        }
+    }
+
+    /// The installed, already-compiled model for sudo: root-owned all the way
+    /// down and up (binary, model, and every parent directory). Processes that
+    /// run as the user load it directly, with no compile step and no user cache.
+    public static func installedModelURL() -> URL? {
+        guard let exe = executableURL, let pkg = installedPackageURL() else { return nil }
+        let compiled = pkg.deletingPathExtension().appendingPathExtension("mlmodelc")
+        guard rootChainOK(exe.path), rootChainOK(compiled.path), rootTreeOK(compiled.path) else { return nil }
+        return compiled
+    }
+
+    /// Where the model is looked for, in order (development use).
     public static func candidateModelURLs() -> [URL] {
         if let installed = installedModelURL() { return [installed] }
         var urls: [URL] = []
         if let env = ProcessInfo.processInfo.environment["FACEAUTH_MODEL"] { urls.append(URL(fileURLWithPath: env)) }
         urls.append(EnrollmentStore.defaultDirectory.appendingPathComponent("models/MobileFaceNet.mlpackage"))
-        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        urls.append(exe.deletingLastPathComponent().appendingPathComponent("../share/faceauth/MobileFaceNet.mlpackage").standardized)
         urls.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("models/MobileFaceNet.mlpackage"))
         return urls
     }
 
+    /// The installed model if there is one, otherwise the first development location.
     public static func load() throws -> Embedder {
+        if let installed = installedModelURL() { return try Embedder(compiledURL: installed) }
         guard let url = candidateModelURLs().first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
             throw CaptureError.model("""
             The face model was not found. Build it with scripts/convert_model.py (see README), \
@@ -47,9 +79,49 @@ public final class Embedder: @unchecked Sendable {
             \(candidateModelURLs().map { "  " + $0.path }.joined(separator: "\n"))
             """)
         }
-        // The installed (root-owned) model is compiled fresh each run into a private
-        // temp dir, so a tampered user cache cannot replace it.
-        return try Embedder(packageURL: url, useCache: installedModelURL() == nil)
+        return try Embedder(packageURL: url)
+    }
+
+    /// Only the installed, root-owned compiled model (sudo verifier, capture
+    /// helper, --system). Never a user location (SPEC rev 4).
+    public static func loadInstalled() throws -> Embedder {
+        guard let url = installedModelURL() else {
+            throw CaptureError.model("""
+            The installed face model is missing or not root-owned \
+            (expected /usr/local/share/faceauth/MobileFaceNet.mlmodelc next to a root-owned \
+            /usr/local/libexec/faceauth, with root-owned parent directories). Re-run pam/install.sh.
+            """)
+        }
+        return try Embedder(compiledURL: url)
+    }
+
+    /// `faceauth install-model` (run as root by install.sh): compiles the
+    /// installed .mlpackage into a root-owned .mlmodelc next to it.
+    public static func compileInstalledModel() throws -> URL {
+        guard geteuid() == 0 else { throw CaptureError.model("install-model must run as root (install.sh does this).") }
+        guard let exe = executableURL, rootChainOK(exe.path), let pkg = installedPackageURL(),
+              rootChainOK(pkg.path), rootTreeOK(pkg.path) else {
+            throw CaptureError.model("The installed binary and model package must be root-owned (run pam/install.sh).")
+        }
+        let target = pkg.deletingPathExtension().appendingPathExtension("mlmodelc")
+        let tmp = try MLModel.compileModel(at: pkg) // root's private temp dir
+        try? FileManager.default.removeItem(at: target)
+        try FileManager.default.moveItem(at: tmp, to: target)
+        return target
+    }
+
+    /// Loads an already-compiled model without writing anything.
+    public init(compiledURL: URL) throws {
+        modelURL = compiledURL
+        do {
+            let cfg = MLModelConfiguration()
+            cfg.computeUnits = .all
+            model = try MLModel(contentsOf: compiledURL, configuration: cfg)
+        } catch {
+            throw CaptureError.model("Cannot load the face model at \(compiledURL.path): \(error.localizedDescription)")
+        }
+        let meta = model.modelDescription.metadata[.creatorDefinedKey] as? [String: String]
+        modelID = meta?["faceauth.model_id"] ?? compiledURL.lastPathComponent
     }
 
     /// Output dimension of the embedding (from the model description).
@@ -58,22 +130,9 @@ public final class Embedder: @unchecked Sendable {
             .multiArrayConstraint?.shape.last.map { $0.intValue }
     }
 
-    public init(packageURL: URL, useCache: Bool = true) throws {
+    /// Development use: compiles once and caches in the user's Caches folder.
+    public init(packageURL: URL) throws {
         modelURL = packageURL
-        if !useCache {
-            do {
-                let tmp = try MLModel.compileModel(at: packageURL)
-                defer { try? FileManager.default.removeItem(at: tmp) }
-                let cfg = MLModelConfiguration()
-                cfg.computeUnits = .all
-                model = try MLModel(contentsOf: tmp, configuration: cfg)
-            } catch {
-                throw CaptureError.model("Cannot load the face model at \(packageURL.path): \(error.localizedDescription)")
-            }
-            let meta = model.modelDescription.metadata[.creatorDefinedKey] as? [String: String]
-            modelID = meta?["faceauth.model_id"] ?? packageURL.lastPathComponent
-            return
-        }
         // Compile once and cache in the user's Caches folder (no Xcode needed).
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("faceauth", isDirectory: true)

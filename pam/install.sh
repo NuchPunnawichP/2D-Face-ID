@@ -26,6 +26,20 @@ sudo rm -rf "$SHARE/MobileFaceNet.mlpackage"
 sudo cp -R models/MobileFaceNet.mlpackage "$SHARE/"
 sudo chown -R root:wheel "$SHARE"
 sudo chmod -R go-w "$SHARE"
+# Compile the model once, as root, into a root-owned .mlmodelc. The verifier and
+# the capture helper (which run as you) load it directly: no compile step and
+# no user-writable cache under sudo.
+sudo /usr/local/libexec/faceauth install-model
+sudo chown -R root:wheel "$SHARE"
+sudo chmod -R go-w "$SHARE"
+# Every parent directory must be root-owned and not writable by others.
+for d in /usr /usr/local /usr/local/share /usr/local/libexec /usr/local/lib; do
+    owner=$(stat -f %u "$d"); perm=$(stat -f %Lp "$d")
+    if [ "$owner" != 0 ] || [ $((0$perm & 022)) != 0 ]; then
+        echo "WARNING: $d is not root-owned or is writable by others (owner $owner, mode $perm)."
+        echo "         faceauth will refuse to run under sudo until this is fixed."
+    fi
+done
 sudo install -o root -g wheel -m 444 pam/pam_faceauth.so /usr/local/lib/pam/pam_faceauth.so
 
 # Record the original state once (outside /etc/pam.d, so it is never read as a PAM service).

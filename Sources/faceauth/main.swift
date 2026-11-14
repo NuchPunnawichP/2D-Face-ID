@@ -18,7 +18,7 @@ do {
 }
 
 let knownCommands: Set = ["enroll", "verify", "calibrate", "unenroll", "record-landmarks", "hud-demo",
-                          "hud-snapshots", "self-test", "capture-helper", "help"]
+                          "hud-snapshots", "self-test", "capture-helper", "install-model", "help"]
 guard knownCommands.contains(opts.command) else {
     say("Unknown command \(opts.command)\n\n\(usage)")
     exit(Exit.error)
@@ -101,6 +101,11 @@ func main() async -> Int32 {
             return try runHUDSnapshots(dir: opts.positional.first)
         case "self-test":
             return try runSelfTest()
+        case "install-model":
+            // Run as root by install.sh: compile the installed model once, root-owned.
+            let url = try Embedder.compileInstalledModel()
+            say("Compiled \(url.path)")
+            return Exit.match
         default:
             say(usage)
             return Exit.error

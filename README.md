@@ -173,8 +173,10 @@ When you run `sudo`, `pam_faceauth.so`:
    ```bash
    sudo /usr/local/libexec/faceauth calibrate --system
    ```
-   Root starts a helper as you to use the camera, checks every frame it sends, and
-   writes the root copy. To remove it again:
+   Root starts a helper as you to use the camera (camera permission is per user).
+   Root checks the structure of what the helper sends (sizes, unit-length
+   embeddings) and writes the root copy, but the embeddings themselves are
+   computed by that helper. To remove it again:
    `sudo /usr/local/libexec/faceauth unenroll --system`.
 4. Test in a **new** tab: `sudo -k; sudo true`.
 
@@ -209,7 +211,10 @@ A program running as you can no longer change what `sudo` compares your face
 against, or switch the liveness checks off:
 - the enrollment and threshold that `sudo` uses are owned by root;
 - the module reads them itself and hands them to the verifier;
-- the binary and model are root-owned (no symlinks, root-owned parent directories);
+- the binary and the compiled model are root-owned, with no symlinks and
+  root-owned parent directories. `install.sh` compiles the model once as root,
+  and the processes that run as you load that copy directly; they never use a
+  model or cache you can write to;
 - only the built-in camera is accepted.
 
 The settings in your home-folder `config.json` are also range-checked
@@ -217,11 +222,11 @@ The settings in your home-folder `config.json` are also range-checked
 
 ### What it does not fix
 
-- **A program that controls the verifier process:** the verifier runs as you,
-  because macOS camera permission is per user. A program running as you that
-  could inject code into that process could fake the result. macOS normally
-  blocks this between processes, but it is not something this project can rule
-  out.
+- **A program that controls the verifier or the enroll helper:** both run as
+  you, because macOS camera permission is per user. A program running as you
+  that could inject code into either process could fake a match, or make
+  `enroll --system` store someone else's face. macOS normally blocks this
+  between processes, but this project cannot rule it out.
 - **Video replay:** a video of you blinking and turning your head, on a screen
   held in front of the camera, can pass. A 2D webcam has no depth sensor.
 - **Masks and 3D models:** they are not detected.

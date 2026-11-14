@@ -21,7 +21,8 @@ actor VerifyState {
 func runVerify(ui: UI, storeData: Data? = nil) async throws -> Int32 {
     // Show the HUD first, before anything slow (R14).
     ui.show(.scanning(Prompt.lookAtCamera.text))
-    let embedder = try Embedder.load()
+    // Under sudo: only the installed, root-owned compiled model (SPEC rev 4).
+    let embedder = storeData != nil ? try Embedder.loadInstalled() : try Embedder.load()
     let config: FaceAuthConfig
     let enrollment: Enrollment
     if let storeData {
