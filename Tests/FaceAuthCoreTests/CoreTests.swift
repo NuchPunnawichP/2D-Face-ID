@@ -80,6 +80,12 @@ struct BlinkTests {
         // Narrow eyes (baseline 0.19): closed level = 0.133, open level = 0.152.
         #expect(Self.run(Array(repeating: 0.19, count: 6) + [0.08, 0.07, 0.19]))
     }
+    @Test func slowDriftThroughMiddleBandIsNotABlink() {
+        // Baseline 0.30: open level 0.24, closed level 0.21. One closed frame,
+        // then a long stretch in the middle band (0.22) before reopening.
+        let ears = Array(repeating: 0.30, count: 6) + [0.15] + Array(repeating: 0.22, count: 10) + [0.30]
+        #expect(!Self.run(ears))
+    }
     @Test func noiseAroundBaselineIsNotABlink() {
         let ears = (0..<90).map { 0.30 + 0.02 * sin(Double($0)) }
         #expect(!Self.run(ears))

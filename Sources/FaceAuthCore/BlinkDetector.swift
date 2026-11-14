@@ -93,11 +93,12 @@ public struct BlinkDetector: Sendable {
         case .closed(let n):
             if ear >= openLevel! {
                 blinkSeen = true
-            } else if ear < closedLevel! {
-                // Eyes closed for too long is not a blink (e.g. eyes shut, or a photo).
+            } else {
+                // Every frame below the open level counts toward the closure, so a
+                // slow drift through the middle band cannot stretch a "blink".
+                // Closed for too long is not a blink (eyes shut, or a photo).
                 state = n + 1 > config.maxClosedFrames ? .waitingOpen : .closed(n + 1)
             }
-            // Between closed and open levels: still in the same closure, no change.
         }
         return blinkSeen
     }

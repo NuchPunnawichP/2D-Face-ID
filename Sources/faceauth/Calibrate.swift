@@ -27,7 +27,7 @@ func collect(_ pipe: FramePipeline, _ embedder: Embedder, _ e: Enrollment, secon
         if let m = motion.lastScore { p.motionScores.append(m) }
         if let ear = EyeAspectRatio.both(left: f.leftEye, right: f.rightEye), blink.add(ear: ear) { p.blink = true }
         if let yaw = f.yawDegrees, let pitch = f.pitchDegrees, abs(yaw) <= 15, abs(pitch) <= 15,
-           let emb = embedding(embedder, cf, r) {
+           let emb = try embedding(embedder, cf, r) {
             if let s = Embeddings.cosine(emb, e.mean) { p.frameScores.append(s) }
             recent.append(emb)
             if recent.count > 3 { recent.removeFirst() }
@@ -48,7 +48,7 @@ func fmt(_ xs: [Double], digits: Int = 3) -> String {
 func runCalibrate(ui: UI, fixedThreshold: Double?) async throws -> Int32 {
     let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
     let embedder = try Embedder.load()
-    let enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID)
+    let enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID, expectedDimension: embedder.dimension)
     if fixedThreshold == nil && !isTTY() {
         throw Failure("calibrate needs a terminal to ask for the threshold, or pass --threshold X.")
     }
@@ -66,6 +66,10 @@ func runCalibrate(ui: UI, fixedThreshold: Double?) async throws -> Int32 {
     await waitForReturn("Step 3/3: hold your phone with a PHOTO of your face in front of the camera for 5 s (move it around a little).")
     let photo = try await collect(pipe, embedder, enrollment, seconds: 5)
 
+    // R13: at least 20 frames per phase, or the numbers mean little.
+    for (name, phase) in [("live", live), ("photo", photo)] where phase.frameScores.count < 20 {
+        throw Failure("Only \(phase.frameScores.count) usable frontal frames in the \(name) step (need 20). Improve the lighting, face the camera, and run calibrate again.")
+    }
     print("""
 
     Similarity to your enrollment (cosine; higher = more similar)
@@ -90,7 +94,7 @@ func runCalibrate(ui: UI, fixedThreshold: Double?) async throws -> Int32 {
     // Motion threshold: between the photo's highest and the live median, if they separate.
     if let pm = photo.motionScores.stats?.max, let lm = live.motionScores.stats?.median {
         if pm < lm {
-            verify.motion.minScore = (pm * lm).squareRoot()
+            verify.motion.minScore = min(0.1, max(0.001, (pm * lm).squareRoot()))
             print(String(format: "  motion threshold set to %.4f (photo max %.4f < live median %.4f)", verify.motion.minScore, pm, lm))
         } else {
             say(String(format: "Warning: the photo moved as much as your live face (photo max %.4f ≥ live median %.4f). Keeping motion threshold %.4f. Blink and head-turn checks still apply.", pm, lm, verify.motion.minScore))
@@ -117,8 +121,11 @@ func runCalibrate(ui: UI, fixedThreshold: Double?) async throws -> Int32 {
         say("Enter threshold [\(String(format: "%.2f", suggested))]: ", terminator: false)
         let line = readLine()?.trimmingCharacters(in: .whitespaces) ?? ""
         if line.isEmpty { chosen = suggested }
-        else if let v = Double(line), v > -1, v < 1 { chosen = v }
+        else if let v = Double(line) { chosen = v }
         else { throw Failure("Not a valid threshold: \(line)") }
+    }
+    guard FaceAuthConfig.thresholdRange.contains(chosen) else {
+        throw Failure("The threshold must be between \(FaceAuthConfig.thresholdRange.lowerBound) and \(FaceAuthConfig.thresholdRange.upperBound).")
     }
     try store.save(FaceAuthConfig(threshold: chosen, modelID: embedder.modelID, verify: verify))
     print("Saved threshold \(String(format: "%.3f", chosen)) to \(store.configURL.path) (mode 600).")

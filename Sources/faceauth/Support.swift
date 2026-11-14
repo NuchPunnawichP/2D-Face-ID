@@ -124,9 +124,15 @@ final class FramePipeline: @unchecked Sendable {
         iterator = try camera.start().makeAsyncIterator()
     }
 
-    /// The next analysed frame, or nil if the camera stopped.
+    /// The next analysed frame, or nil if the camera was stopped by us.
+    /// Throws if the camera failed or the stream ended on its own.
     func next() async throws -> (CameraFrame, FaceAnalyzer.Result)? {
-        guard let cf = await iterator?.next() else { return nil }
+        guard let cf = await iterator?.next() else {
+            if camera.endedUnexpectedly {
+                throw CaptureError.cannotConfigure(camera.failure ?? "the camera stopped delivering frames")
+            }
+            return nil
+        }
         return (cf, try analyzer.analyze(cf))
     }
 
@@ -149,9 +155,11 @@ final class FramePipeline: @unchecked Sendable {
     func stop() { camera.stop() }
 }
 
-func embedding(_ embedder: Embedder, _ cf: CameraFrame, _ r: FaceAnalyzer.Result) -> [Float]? {
+/// The embedding for a frame. Nil only when the eyes were not found; a Core ML
+/// failure throws (→ exit 2), it is never silently treated as "no match".
+func embedding(_ embedder: Embedder, _ cf: CameraFrame, _ r: FaceAnalyzer.Result) throws -> [Float]? {
     guard let l = r.imageLeftEyePx, let rr = r.imageRightEyePx else { return nil }
-    return try? embedder.embed(cf, imageLeftEye: l, imageRightEye: rr)
+    return try embedder.embed(cf, imageLeftEye: l, imageRightEye: rr)
 }
 
 /// Seconds since this process started (from the kernel's start time).

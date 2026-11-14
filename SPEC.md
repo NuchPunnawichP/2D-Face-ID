@@ -144,8 +144,84 @@ The enroll HUD shows "Snap n/5" with the pose instruction and five progress dots
 | R22 | The README covers setup, usage, the chosen threshold, the model source and license, and security limitations: video replay, masks, look-alikes, and that a 2D webcam is weaker than a password, Touch ID or Face ID. | Review | — | README |
 
 ## Verification report
-(Filled in Phase 4.)
+Run on 2026-11-14 on branch `claude/faceauth-macos-prototype-82f9cd`. Local commits only: nothing has been pushed.
+
+**Environment.** macOS 26.6.1 (MacBook Air, notch). Apple Swift 6.3 and Apple clang 21.0.0 from the Command Line Tools. Python 3.11.9, coremltools 8.3.0, torch 2.5.0.
+
+**Commands.**
+
+| Check | Command | Result |
+|---|---|---|
+| Build | `swift build` and `swift build -c release` | Both complete with no errors. |
+| Unit tests | `./scripts/test.sh` (`swift test` plus framework search paths for the Command Line Tools; A4) | 69 tests in 12 suites passed. 6 recorded-fixture tests were skipped because no fixtures exist yet. |
+| Formal model | `python3 formal/verify_model.py` | "R10 and R11 satisfied in model. Exhausted 3875 reachable states." Exit 0. |
+| Seeded fault | `python3 formal/verify_model.py --faulty` | R10 violated with a counterexample: Success at tick 51. Exit 1, as expected. |
+| PAM module | `make -C pam test` | 14/14 checks passed, including the hanging verifier killed at 2.00 s (`timeout=2`) and at 10.03 s (default). |
+| Model | `scripts/.venv/bin/python -I scripts/convert_model.py` | SHA-256 matches the pinned value. Core ML vs PyTorch cosine 1.00000. |
+| Model runtime | `faceauth self-test` (release build) | 128-d embedding, L2 norm 1.0000, 2.4 ms per embedding, load 0.08 s. |
+| HUD snapshots | `faceauth hud-snapshots docs/hud` | 10 PNGs written. Reduce Motion check: no animations with it on; pulse and shake present with it off. |
+| HUD live | `faceauth hud-demo` (3 runs) | On screen 0.103 s and 0.105 s after process start on warm launches; 0.711 s on the first launch after a rebuild. Collapse 0.92–0.94 s after the result. Frontmost app unchanged. |
+| Error paths | `FACEAUTH_STORE_DIR=… faceauth verify --no-hud` with a synthetic store | No config, wrong model, config 644, enrollment 644 and directory 755 each exit 2 with a fix-it message, before the camera opens. |
+
+**Model mapping, abstractions and bounds.** See `formal/README.md`.
+- One tick is 0.1 s, so the deadline is tick 50 (inclusive).
+- Detectors are abstracted to monotone flags, and ghost variables record real liveness events since the last reset.
+- The environment chooses one event per tick: valid / drop / reset / wrong turn / stall.
+- There is no fairness assumption.
+- Not modelled: camera start-up and errors.
+- The real `VerifyKernel.decide` is additionally checked over every flag combination × a 0.1 s grid from 0 to 6 s, plus 4.9999999, 5.0 and 5.0000001 (`VerifyKernelTests.exhaustive`, 10,240 cases).
+
+**Interpretations made during implementation.** These do not change the contract.
+- **Deadline:** a frame that arrives after t0 + 5.0 s is not evaluated, so it cannot produce Success. The "same frame" ordering rule therefore applies only to a frame at exactly 5.0 s.
+- **Motion check:** "inter-ocular-normalized" positions are centred on the eye midpoint and rotated to the eye line, so moving, tilting or zooming a flat photo produces no motion.
+- **Calibration:** `calibrate` also measures the head-turn sign (`leftYawSign`) and the motion threshold. R13 allows calibration to tune numeric thresholds.
 
 | ID | Status | Exhaustive or bounded | Implementation evidence | Formal evidence | Outstanding gap |
 |---|---|---|---|---|---|
-| R1–R22 | unrun | — | — | — | — |
+| R1 | passed | — | `swift build` (debug and release) | — | — |
+| R2 | partially verified | — | The code maps `.denied`/`.restricted` to exit 2 with a System Settings hint (`Camera.ensurePermission`) | — | Not run with permission actually denied: needs you |
+| R3 | passed tests | bounded (synthetic) | `GateTests` (0 faces, 2 faces, quality, IoU, gap) | — | No recorded `two-faces` fixture yet |
+| R4 | passed tests | — | `AlignmentTests` (eyes land within 1 px; inverse); model output parity | — | Not checked on a live face |
+| R5 | passed | — | Conversion log, pinned SHA-256, parity 1.00000; README records source and license | — | — |
+| R6 | partially verified | — | `StoreTests` (0700/0600, round trip, only `enrollment.json` written, 5 + mean) | — | Live `enroll` not run (needs your face) |
+| R7 | passed tests (synthetic) | bounded | `BlinkTests` (incl. the rev-3 regression `constantLowEarNeverBlinks`) | — | Recorded `blink`/`open`/`photo` fixtures missing |
+| R8 | passed tests (synthetic) | bounded | `TurnTests` (left/right, 3-frame hold, wrong direction, sign) | Wrong turn modelled | Yaw sign on this camera not yet measured |
+| R9 | passed tests (synthetic) | bounded | `MotionTests` (static, translated, zoomed photo rejected; live accepted) | — | Recorded `photo` fixture and live calibration missing |
+| R10 | satisfied in model; passed tests | exhaustive (model, 3875 states); kernel grid | `VerifySessionTests`, `VerifyKernelTests.exhaustive` | `formal/verify_model.py` exit 0; `--faulty` gives a counterexample | Live end-to-end verify not run |
+| R11 | satisfied in model; passed tests | exhaustive (model) | `tickFiresDeadlineWithoutFrames`, `frameAfterDeadlineIsNotEvaluated`; 3 s camera-start limit in `FramePipeline.first` | No non-final state past tick 50; no deadlock | 3 s camera limit not exercised at runtime |
+| R12 | passed tests + runtime (error paths) | — | Exit-code tests; runtime exit 2 paths listed above; usage errors exit 2 | — | Exit 0/1 not observed live |
+| R13 | unrun | — | `calibrate` implemented | — | Needs you, live and with a phone photo; the README threshold row is empty |
+| R14 | partially verified | — | `hud-demo`: notch frame 360×120 at top centre, focus unchanged, warm 0.10 s | — | First launch after a rebuild took 0.71 s (> 0.5 s). Over a full-screen app and on an external display: not tested. The frontmost app during the test was `loginwindow`, so the screen may have been locked. |
+| R15 | passed | — | `docs/hud/*.png` for all states, notch and pill | — | — |
+| R16 | passed tests | — | `VerifyControllerTests` (a throwing sink gives the same outcomes); `--no-hud` path; no-GUI fallback via `GUISession` | — | Not run over SSH |
+| R17 | passed (demo) | — | `hud-demo`: collapse 0.92–0.94 s after the result (≤ 1.0 s) | — | Tight margin; not measured in a live verify |
+| R18 | passed | — | `hud-snapshots` animation check | — | Not observed live with the setting on |
+| R19 | passed tests | — | `make -C pam test` 14/14: exit 0 → SUCCESS; 1, 2, hang (2 s and default 10 s), unsafe, missing or relative path → AUTH_ERR | — | Not loaded into the real `sudo` |
+| R20 | unrun | — | `pam/install.sh` (only `sudo_local`, prints the `/etc/pam.d/sudo` checksum before and after) and `uninstall.sh`; recovery in the README | — | Needs your OK to run with sudo |
+| R21 | passed | — | Unit tests use synthetic and recorded landmark data, never the camera | — | Recorded fixtures still to be added |
+| R22 | passed (review) | — | README sections: setup, usage, threshold table, model and license, limitations | — | Threshold value not filled in yet |
+
+**Assumptions.**
+
+| ID | Status |
+|---|---|
+| A1 | Confirmed by `hud-demo`. |
+| A2 | Open. To be tested at install time. |
+| A3 | Open. Needs a live run. |
+| A4 | Partly false: `swift test` with only the Command Line Tools needs extra `-F`/rpath flags, which `scripts/test.sh` adds. Running it under Xcode needs `sudo xcodebuild -license`, which was not done. |
+| A5 | Confirmed: `MLModel.compileModel` works without Xcode. |
+
+**Reproduce.**
+
+```bash
+swift build -c release
+./scripts/test.sh
+python3 formal/verify_model.py
+python3 formal/verify_model.py --faulty
+make -C pam test
+.build/release/faceauth self-test
+.build/release/faceauth hud-snapshots docs/hud
+.build/release/faceauth hud-demo
+```
+
+**Independent review.** (pending)

@@ -81,6 +81,14 @@ int main(int argc, char **argv) {
     CHECK(auth_with(swritable, 10) == PAM_AUTH_ERR, "world-writable binary refused");
     CHECK(auth_with("/nonexistent/faceauth", 10) == PAM_AUTH_ERR, "missing binary -> PAM_AUTH_ERR");
     CHECK(auth_with("relative/path", 10) == PAM_AUTH_ERR, "relative path refused");
+    char slink[512];
+    snprintf(slink, sizeof slink, "%s/stub_symlink", dir);
+    unlink(slink);
+    symlink("/usr/bin/true", slink);
+    CHECK(auth_with(slink, 10) == PAM_AUTH_ERR, "symlinked binary refused");
+    char dotdot[600];
+    snprintf(dotdot, sizeof dotdot, "%s/../%s/stub_exit0", dir, strrchr(dir, '/') + 1);
+    CHECK(auth_with(dotdot, 10) == PAM_AUTH_ERR, "path containing /../ refused");
 
     /* Signals and odd statuses never succeed. */
     CHECK(faceauth_status_to_pam(0) == PAM_SUCCESS, "status 0 maps to success");

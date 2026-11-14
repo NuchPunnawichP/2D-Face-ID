@@ -27,8 +27,9 @@ The full contract (requirements, decisions, verification results) is in [SPEC.md
      as in Soukupová & Čech 2016;
    - **turns its head** in a direction picked at random for each attempt, held for
      3 frames at 20° or more; turning the wrong way fails at once;
-   - **moves non-rigidly**: landmarks are normalised to the eye line, so moving,
-     tilting or zooming a flat photo does not count;
+   - **moves non-rigidly**: landmarks are normalised to the eye line, so sliding,
+     rotating in-plane or zooming a flat photo does not count. Tilting a photo
+     away from the camera (perspective) is *not* cancelled and may count;
    - **matches**: the mean of at least 3 frontal embeddings, compared with your
      enrollment, reaches the threshold.
 
@@ -185,10 +186,18 @@ Be clear about what this does **not** protect against:
 - **Masks and 3D models:** they are not detected.
 - **Look-alikes and twins:** a 128-d embedding from a small model is far less
   discriminating than Face ID's depth map.
-- **Malware running as you:** your enrollment and threshold are in your home
-  folder, so any program running as you can change them (for example, lower the
-  threshold). The PAM module only runs a root-owned binary, but the data it uses
-  is yours.
+- **A tilted photo:** tilting a printed or on-screen photo changes the measured
+  eye shape and head angle. It may fake a blink or a head turn. This has not been
+  tested yet; recording a `photo` fixture while tilting the phone would show it.
+- **Malware running as you:** your enrollment is in your home folder, so any
+  program running as you could replace it with embeddings of someone else's face,
+  and that person could then pass `sudo`.
+  - The settings in `config.json` are range-checked (threshold ≥ 0.2, liveness
+    checks cannot be switched off), so tampering there only gives exit 2.
+  - Under `sudo`, the module runs only a root-owned binary (no symlinks, root-owned
+    parent directories) with the root-owned model.
+  - A root-owned copy of the enrollment for `sudo` would close this gap; it is not
+    built yet (see SPEC.md).
 - **Lighting and camera quality:** these affect accuracy. Calibrate in the
   lighting you normally use.
 - **Camera access under `sudo` is untested** (SPEC assumption A2). If macOS does not

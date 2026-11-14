@@ -16,10 +16,12 @@ actor VerifyState {
 }
 
 func runVerify(ui: UI) async throws -> Int32 {
+    // Show the HUD first, before anything slow (R14).
+    ui.show(.scanning(Prompt.lookAtCamera.text))
     let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
     let config = try store.loadConfig()            // Q11: refuse until calibrated
     let embedder = try Embedder.load()
-    let enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID)
+    let enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID, expectedDimension: embedder.dimension)
     if config.modelID != embedder.modelID {
         throw Failure("The threshold was calibrated for model \(config.modelID); run faceauth calibrate again.")
     }
@@ -34,7 +36,6 @@ func runVerify(ui: UI) async throws -> Int32 {
         }
     })
 
-    ui.show(.scanning(Prompt.lookAtCamera.text))
     let pipe = FramePipeline()
     try await pipe.start()
     defer { pipe.stop() }
@@ -42,24 +43,28 @@ func runVerify(ui: UI) async throws -> Int32 {
     ui.log("first frame; t0 set, challenge \(challenge.rawValue)")
     await state.start()
 
-    // Timer: fires the deadline even if frames stop arriving (R11).
+    // Timer: fires the deadline even if frames stop arriving (R11). Frames are
+    // judged by their capture time, so the timer allows 0.3 s for a frame
+    // captured before the deadline that is still being analysed.
+    let processingGrace = 0.3
     let ticker = Task {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 50_000_000)
-            if await state.tick(HostClock.now()).isFinal { pipe.stop(); break }
+            if await state.tick(HostClock.now() - processingGrace).isFinal { pipe.stop(); break }
         }
     }
     defer { ticker.cancel() }
 
-    var outcome = await state.frame(r0.frame, await state.wantsEmbedding(r0.frame) ? embedding(embedder, cf0, r0) : nil)
+    var outcome = await state.frame(r0.frame, await state.wantsEmbedding(r0.frame) ? try embedding(embedder, cf0, r0) : nil)
     while !outcome.isFinal {
         guard let (cf, r) = try await pipe.next() else { break }
-        let e = await state.wantsEmbedding(r.frame) ? embedding(embedder, cf, r) : nil
+        let e = await state.wantsEmbedding(r.frame) ? try embedding(embedder, cf, r) : nil
         outcome = await state.frame(r.frame, e)
     }
     outcome = await state.outcome
     if outcome == .pending { throw Failure("The camera stopped delivering frames.") } // camera error → exit 2
     let decidedAt = HostClock.now()
+    pipe.stop() // stop the camera before the HUD animation (R17)
     let s = await state.session
     if ui.verbose {
         let sc = s.lastScores.map { String(format: "mean %.3f best %.3f", $0.meanScore, $0.bestIndividualScore) } ?? "none"

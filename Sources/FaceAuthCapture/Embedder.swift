@@ -13,8 +13,23 @@ public final class Embedder: @unchecked Sendable {
     private let ciContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
     private var cropBuffer: CVPixelBuffer?
 
+    /// The root-owned model next to a root-owned binary (installed for sudo).
+    /// When it exists, it is the only model used and user locations are ignored.
+    static func installedModelURL() -> URL? {
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let model = exe.deletingLastPathComponent().appendingPathComponent("../share/faceauth/MobileFaceNet.mlpackage").standardized
+        func rootOwned(_ p: String) -> Bool {
+            var st = stat()
+            return lstat(p, &st) == 0 && st.st_uid == 0 && (st.st_mode & 0o022) == 0
+        }
+        guard rootOwned(exe.path), rootOwned(model.path),
+              rootOwned(model.deletingLastPathComponent().path) else { return nil }
+        return model
+    }
+
     /// Where the model is looked for, in order.
     public static func candidateModelURLs() -> [URL] {
+        if let installed = installedModelURL() { return [installed] }
         var urls: [URL] = []
         if let env = ProcessInfo.processInfo.environment["FACEAUTH_MODEL"] { urls.append(URL(fileURLWithPath: env)) }
         urls.append(EnrollmentStore.defaultDirectory.appendingPathComponent("models/MobileFaceNet.mlpackage"))
@@ -32,12 +47,34 @@ public final class Embedder: @unchecked Sendable {
             \(candidateModelURLs().map { "  " + $0.path }.joined(separator: "\n"))
             """)
         }
-        return try Embedder(packageURL: url)
+        // The installed (root-owned) model is compiled fresh each run into a private
+        // temp dir, so a tampered user cache cannot replace it.
+        return try Embedder(packageURL: url, useCache: installedModelURL() == nil)
     }
 
-    public init(packageURL: URL) throws {
+    /// Output dimension of the embedding (from the model description).
+    public var dimension: Int? {
+        model.modelDescription.outputDescriptionsByName["embedding"]?
+            .multiArrayConstraint?.shape.last.map { $0.intValue }
+    }
+
+    public init(packageURL: URL, useCache: Bool = true) throws {
         modelURL = packageURL
-        // Compile once and cache next to the user's store (no Xcode needed).
+        if !useCache {
+            do {
+                let tmp = try MLModel.compileModel(at: packageURL)
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                let cfg = MLModelConfiguration()
+                cfg.computeUnits = .all
+                model = try MLModel(contentsOf: tmp, configuration: cfg)
+            } catch {
+                throw CaptureError.model("Cannot load the face model at \(packageURL.path): \(error.localizedDescription)")
+            }
+            let meta = model.modelDescription.metadata[.creatorDefinedKey] as? [String: String]
+            modelID = meta?["faceauth.model_id"] ?? packageURL.lastPathComponent
+            return
+        }
+        // Compile once and cache in the user's Caches folder (no Xcode needed).
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("faceauth", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)

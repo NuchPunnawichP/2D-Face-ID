@@ -3,6 +3,8 @@ import Foundation
 /// What `enroll` saves. Embeddings only, never images.
 public struct Enrollment: Codable, Equatable, Sendable {
     public static let formatVersion = 1
+    /// Exactly this many snaps are enrolled (SPEC R6).
+    public static let snapCount = 5
 
     public var formatVersion: Int
     public var modelID: String
@@ -42,6 +44,33 @@ public struct FaceAuthConfig: Codable, Equatable, Sendable {
         self.modelID = modelID
         self.verify = verify
     }
+
+    public static let thresholdRange: ClosedRange<Double> = 0.2...0.99
+
+    /// Names of settings outside their allowed range (empty = valid). A
+    /// tampered config.json cannot switch the liveness checks off.
+    public func invalidSettings() -> [String] {
+        let v = verify
+        var bad: [String] = []
+        func check(_ ok: Bool, _ name: String) { if !ok { bad.append(name) } }
+        check(Self.thresholdRange.contains(threshold), "threshold")
+        check((0.2...1).contains(v.gate.minQuality), "gate.minQuality")
+        check((0.1...1).contains(v.gate.minIoU), "gate.minIoU")
+        check(v.gate.maxGapSeconds > 0 && v.gate.maxGapSeconds <= 1, "gate.maxGapSeconds")
+        check(v.blink.closedThreshold > 0 && v.blink.closedThreshold <= 0.3, "blink.closedThreshold")
+        check((0.5...0.95).contains(v.blink.openFactor), "blink.openFactor")
+        check((0.4...0.9).contains(v.blink.closedFactor) && v.blink.closedFactor < v.blink.openFactor, "blink.closedFactor")
+        check((3...30).contains(v.blink.baselineFrames), "blink.baselineFrames")
+        check((1...15).contains(v.blink.maxClosedFrames), "blink.maxClosedFrames")
+        check((10...45).contains(v.turn.yawThresholdDegrees), "turn.yawThresholdDegrees")
+        check((2...15).contains(v.turn.holdFrames), "turn.holdFrames")
+        check(v.turn.leftYawSign == 1 || v.turn.leftYawSign == -1, "turn.leftYawSign")
+        check((0.5...3).contains(v.motion.windowSeconds), "motion.windowSeconds")
+        check((5...90).contains(v.motion.minFrames), "motion.minFrames")
+        check((0.001...0.1).contains(v.motion.minScore), "motion.minScore")
+        check((5...25).contains(v.frontalMaxDegrees), "frontalMaxDegrees")
+        return bad
+    }
 }
 
 public enum StoreError: Error, CustomStringConvertible, Equatable {
@@ -51,6 +80,7 @@ public enum StoreError: Error, CustomStringConvertible, Equatable {
     case wrongOwner(path: String)
     case corrupt(path: String, reason: String)
     case modelMismatch(stored: String, current: String)
+    case invalidSettings(path: String, names: [String])
     case io(String)
 
     public var description: String {
@@ -67,6 +97,8 @@ public enum StoreError: Error, CustomStringConvertible, Equatable {
             return "\(p) could not be read (\(r)). Remove it and run: faceauth enroll"
         case .modelMismatch(let s, let c):
             return "The enrollment was made with model \(s) but the current model is \(c). Run: faceauth enroll"
+        case .invalidSettings(let p, let names):
+            return "\(p) has settings outside their allowed range (\(names.joined(separator: ", "))). Run: faceauth calibrate"
         case .io(let m):
             return m
         }
@@ -170,7 +202,7 @@ public struct EnrollmentStore: Sendable {
         if m != mode { throw StoreError.insecurePermissions(path: path, mode: m) }
     }
 
-    public func loadEnrollment(expectedModelID: String? = nil) throws -> Enrollment {
+    public func loadEnrollment(expectedModelID: String? = nil, expectedDimension: Int? = nil) throws -> Enrollment {
         guard hasEnrollment else { throw StoreError.notEnrolled }
         try checkSecure(directory.path, mode: 0o700)
         try checkSecure(enrollmentURL.path, mode: 0o600)
@@ -181,24 +213,33 @@ public struct EnrollmentStore: Sendable {
             throw StoreError.corrupt(path: enrollmentURL.path, reason: "\(error)")
         }
         guard e.formatVersion == Enrollment.formatVersion,
-              !e.embeddings.isEmpty, e.mean.count == e.dimension,
+              e.embeddings.count == Enrollment.snapCount, e.mean.count == e.dimension,
               e.embeddings.allSatisfy({ $0.count == e.dimension }) else {
             throw StoreError.corrupt(path: enrollmentURL.path, reason: "wrong format or dimension")
         }
         if let expectedModelID, e.modelID != expectedModelID {
             throw StoreError.modelMismatch(stored: e.modelID, current: expectedModelID)
         }
+        if let expectedDimension, e.dimension != expectedDimension {
+            throw StoreError.corrupt(path: enrollmentURL.path,
+                                     reason: "embedding dimension \(e.dimension), but the model outputs \(expectedDimension)")
+        }
         return e
     }
 
     public func loadConfig() throws -> FaceAuthConfig {
         guard FileManager.default.fileExists(atPath: configURL.path) else { throw StoreError.notCalibrated }
+        try checkSecure(directory.path, mode: 0o700)
         try checkSecure(configURL.path, mode: 0o600)
+        let c: FaceAuthConfig
         do {
-            return try Self.decoder.decode(FaceAuthConfig.self, from: Data(contentsOf: configURL))
+            c = try Self.decoder.decode(FaceAuthConfig.self, from: Data(contentsOf: configURL))
         } catch {
             throw StoreError.corrupt(path: configURL.path, reason: "\(error)")
         }
+        let bad = c.invalidSettings()
+        if !bad.isEmpty { throw StoreError.invalidSettings(path: configURL.path, names: bad) }
+        return c
     }
 
     /// Lists every file in the store directory (used to prove no images are written).

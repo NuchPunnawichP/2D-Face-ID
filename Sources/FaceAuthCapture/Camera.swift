@@ -53,6 +53,9 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "faceauth.camera")
     private var continuation: AsyncStream<CameraFrame>.Continuation?
+    /// Set when the session failed or was interrupted.
+    public private(set) var failure: String?
+    private var stopped = false
 
     /// Asks for camera permission if needed. Throws if access is not granted.
     public static func ensurePermission() async throws {
@@ -102,17 +105,33 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let stream = AsyncStream<CameraFrame>(bufferingPolicy: .bufferingNewest(2)) { c in
             self.continuation = c
         }
+        // A runtime error or interruption ends the stream; callers treat an
+        // early end as a camera error (exit 2).
+        for name in [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.wasInterruptedNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: session, queue: nil) { [weak self] n in
+                guard let self else { return }
+                self.queue.async {
+                    self.failure = (n.userInfo?[AVCaptureSessionErrorKey] as? Error)?.localizedDescription ?? "camera interrupted"
+                    self.continuation?.finish()
+                    self.continuation = nil
+                }
+            }
+        }
         queue.async { self.session.startRunning() }
         return stream
     }
 
     public func stop() {
         queue.sync {
+            stopped = true
             if session.isRunning { session.stopRunning() }
             continuation?.finish()
             continuation = nil
         }
     }
+
+    /// True when the stream ended without `stop()` being called.
+    public var endedUnexpectedly: Bool { queue.sync { !stopped } }
 
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                               from connection: AVCaptureConnection) {

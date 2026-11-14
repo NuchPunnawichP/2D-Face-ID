@@ -36,6 +36,7 @@ enum Pose: String, CaseIterable {
 }
 
 func runEnroll(ui: UI) async throws -> Int32 {
+    ui.show(.enroll(step: 0, of: 5, "Starting the camera…")) // HUD first (R14)
     let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
     let embedder = try Embedder.load()
     let pipe = FramePipeline()
@@ -63,7 +64,7 @@ func runEnroll(ui: UI) async throws -> Int32 {
             if pose == .down, let s = upPitchSign { ok = ok && pitch * s < 0 }
             guard ok else { continue }
             if burstEnd == nil { burstEnd = f.time + 1.0 }
-            if q > (best?.q ?? -1), let e = embedding(embedder, cf, r) {
+            if q > (best?.q ?? -1), let e = try embedding(embedder, cf, r) {
                 best = (q, e, yaw, pitch)
             }
             if let end = burstEnd, f.time >= end { break }

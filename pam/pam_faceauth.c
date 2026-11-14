@@ -39,19 +39,40 @@
 #define DEFAULT_PATH "/usr/local/libexec/faceauth"
 #define DEFAULT_TIMEOUT 10
 
-/* Returns 0 if `path` is safe to execute for the current privilege level. */
+/* Owner/mode rule for the binary and each directory above it. */
+static int trusted_owner_and_mode(const struct stat *st) {
+    if (st->st_mode & (S_IWGRP | S_IWOTH)) return 0;
+    if (geteuid() == 0) return st->st_uid == 0;
+    /* Unprivileged (tests): allow root or ourselves. */
+    return st->st_uid == 0 || st->st_uid == geteuid();
+}
+
+/*
+ * Returns 0 if `path` is safe to execute for the current privilege level:
+ * an absolute path, not a symlink, a regular executable file, and it and
+ * every parent directory owned by root (or, unprivileged, by us) and not
+ * writable by group or others.
+ */
 int faceauth_check_binary(const char *path) {
     struct stat st;
-    if (path == NULL || path[0] != '/') return -1;
-    if (stat(path, &st) != 0) return -1;
-    if (!S_ISREG(st.st_mode) || !(st.st_mode & S_IXUSR)) return -1;
-    if (st.st_mode & (S_IWGRP | S_IWOTH)) return -1;
-    if (geteuid() == 0) {
-        if (st.st_uid != 0) return -1;
-    } else if (st.st_uid != 0 && st.st_uid != geteuid()) {
-        /* Unprivileged (tests): allow binaries owned by root or by us. */
-        return -1;
+    if (path == NULL || path[0] != '/' || strstr(path, "/../") != NULL || strlen(path) >= 1024) return -1;
+    if (lstat(path, &st) != 0) return -1;
+    if (S_ISLNK(st.st_mode)) return -1;
+    char dir[1024];
+    strncpy(dir, path, sizeof dir - 1);
+    dir[sizeof dir - 1] = '\0';
+    for (char *slash = strrchr(dir, '/'); slash != NULL; slash = strrchr(dir, '/')) {
+        if (slash == dir) { dir[1] = '\0'; } else { *slash = '\0'; }
+        struct stat ds;
+        if (lstat(dir, &ds) != 0) return -1;
+        /* /tmp-style sticky world-writable dirs are allowed only unprivileged (tests). */
+        int sticky_ok = geteuid() != 0 && (ds.st_mode & S_ISVTX);
+        if (!S_ISDIR(ds.st_mode) && !S_ISLNK(ds.st_mode)) return -1;
+        if (!sticky_ok && geteuid() == 0 && (ds.st_uid != 0 || (ds.st_mode & (S_IWGRP | S_IWOTH)))) return -1;
+        if (strcmp(dir, "/") == 0) break;
     }
+    if (!S_ISREG(st.st_mode) || !(st.st_mode & S_IXUSR)) return -1;
+    if (!trusted_owner_and_mode(&st)) return -1;
     return 0;
 }
 
