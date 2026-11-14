@@ -180,11 +180,28 @@ When you run `sudo`, `pam_faceauth.so`:
    `sudo /usr/local/libexec/faceauth unenroll --system`.
 4. Test in a **new** tab: `sudo -k; sudo true`.
 
+### Install from a DMG
+
+`sh scripts/make_dmg.sh 0.1.0` builds `dist/faceauth-0.1.0.dmg` (git-ignored) and
+`dist/faceauth-0.1.0.dmg.sha256`. The DMG contains:
+- the release binary and `pam_faceauth.so`, both ad-hoc signed;
+- the converted model;
+- `install.sh` and `uninstall.sh`;
+- this README, SPEC.md and the model's license.
+
+Open it, then follow `READ ME FIRST.txt`. It runs the same steps as above with
+`sh /Volumes/faceauth/install.sh`.
+
+The binaries are built for Apple silicon (arm64) and are not notarized. A DMG
+downloaded from the internet is quarantined by macOS; build it locally instead.
+
 ### Uninstall
 
 ```bash
 sh pam/uninstall.sh
 ```
+
+From the DMG, run `sh /Volumes/faceauth/uninstall.sh`.
 
 This removes the `pam_faceauth` line from `/etc/pam.d/sudo_local` and keeps any
 other lines, such as Touch ID. If the installer created the file and nothing
