@@ -128,11 +128,21 @@ The unit tests use synthetic landmark data, plus recorded landmark fixtures
 
 ## Milestone 2: `sudo`
 
-`pam_faceauth.so` runs `/usr/local/libexec/faceauth verify` as you, and does it
-**before** the password prompt.
-- **Exit 0:** sudo proceeds.
-- **Anything else** (no match, timeout, error, or no answer within 10 s): sudo asks
-  for your password as usual.
+`sudo` uses its **own, root-owned copy** of your enrollment and threshold in
+`/var/db/faceauth/<your uid>/` (folders mode 0700, files 0600, owned by
+root:wheel). Programs running as you cannot change it. Your home-folder files
+are only for trying `faceauth` without `sudo`.
+
+When you run `sudo`, `pam_faceauth.so`:
+1. checks the root copy: right owner and modes, no symlinks, at most 64 KiB. If
+   it is missing or wrong, the verifier is not started and sudo asks for your
+   password;
+2. starts `/usr/local/libexec/faceauth verify --store-fd 3` as you (camera
+   permission is per user), and passes the root copy on file descriptor 3. The
+   verifier never reads your home-folder files, and it only uses the Mac's
+   built-in camera, never an external, iPhone or virtual one;
+3. on exit 0, sudo proceeds. On anything else (no match, timeout, error, or no
+   answer within 10 s), sudo asks for your password as usual.
 
 ### Install
 
@@ -155,7 +165,18 @@ The unit tests use synthetic landmark data, plus recorded landmark fixtures
    ```
    It never edits `/etc/pam.d/sudo`, and it prints that file's checksum before and
    after so you can confirm.
-3. Test in a **new** tab: `sudo -k; sudo true`.
+3. Enroll and calibrate **for sudo** (5 fresh snaps; your home-folder enrollment
+   is not copied):
+   ```bash
+   sudo /usr/local/libexec/faceauth enroll --system
+   ```
+   ```bash
+   sudo /usr/local/libexec/faceauth calibrate --system
+   ```
+   Root starts a helper as you to use the camera, checks every frame it sends, and
+   writes the root copy. To remove it again:
+   `sudo /usr/local/libexec/faceauth unenroll --system`.
+4. Test in a **new** tab: `sudo -k; sudo true`.
 
 ### Uninstall
 
@@ -163,9 +184,12 @@ The unit tests use synthetic landmark data, plus recorded landmark fixtures
 sh pam/uninstall.sh
 ```
 
-This removes the line (or the whole `sudo_local`, if the installer created it)
-and the installed files. Your enrollment is kept; delete it with
-`rm -rf ~/Library/Application\ Support/faceauth`.
+This removes the `pam_faceauth` line from `/etc/pam.d/sudo_local` and keeps any
+other lines, such as Touch ID. If the installer created the file and nothing
+else is left in it, the file is deleted. The installed files are removed too.
+- **Root copy:** it lists `/var/db/faceauth` and deletes it only if you answer `y`.
+- **Home-folder enrollment:** it is kept; delete it with
+  `rm -rf ~/Library/Application\ Support/faceauth`.
 
 ### Recovery if sudo breaks
 
@@ -179,29 +203,38 @@ and the installed files. Your enrollment is kept; delete it with
 
 ## Security limitations
 
-Be clear about what this does **not** protect against:
+### What the root-owned copy fixes
 
-- **Video replay:** a video of you blinking and turning your head, on a screen held
-  in front of the camera, can pass. A 2D webcam has no depth sensor.
+A program running as you can no longer change what `sudo` compares your face
+against, or switch the liveness checks off:
+- the enrollment and threshold that `sudo` uses are owned by root;
+- the module reads them itself and hands them to the verifier;
+- the binary and model are root-owned (no symlinks, root-owned parent directories);
+- only the built-in camera is accepted.
+
+The settings in your home-folder `config.json` are also range-checked
+(threshold ≥ 0.2, and the liveness checks cannot be switched off).
+
+### What it does not fix
+
+- **A program that controls the verifier process:** the verifier runs as you,
+  because macOS camera permission is per user. A program running as you that
+  could inject code into that process could fake the result. macOS normally
+  blocks this between processes, but it is not something this project can rule
+  out.
+- **Video replay:** a video of you blinking and turning your head, on a screen
+  held in front of the camera, can pass. A 2D webcam has no depth sensor.
 - **Masks and 3D models:** they are not detected.
 - **Look-alikes and twins:** a 128-d embedding from a small model is far less
   discriminating than Face ID's depth map.
 - **A tilted photo:** tilting a printed or on-screen photo changes the measured
   eye shape and head angle. It may fake a blink or a head turn. This has not been
   tested yet; recording a `photo` fixture while tilting the phone would show it.
-- **Malware running as you:** your enrollment is in your home folder, so any
-  program running as you could replace it with embeddings of someone else's face,
-  and that person could then pass `sudo`.
-  - The settings in `config.json` are range-checked (threshold ≥ 0.2, liveness
-    checks cannot be switched off), so tampering there only gives exit 2.
-  - Under `sudo`, the module runs only a root-owned binary (no symlinks, root-owned
-    parent directories) with the root-owned model.
-  - A root-owned copy of the enrollment for `sudo` would close this gap; it is not
-    built yet (see SPEC.md).
 - **Lighting and camera quality:** these affect accuracy. Calibrate in the
   lighting you normally use.
-- **Camera access under `sudo` is untested** (SPEC assumption A2). If macOS does not
-  give the verifier the camera there, sudo simply falls back to your password.
+- **Camera access under `sudo` is untested** (SPEC assumptions A2 and A6). If
+  macOS does not give the verifier or the enroll helper the camera there, sudo
+  simply falls back to your password and `enroll --system` fails with exit 2.
 
 For anything that matters, use your password, Touch ID (`pam_tid.so`) or Face ID.
 This project exists to learn how the pieces fit together.

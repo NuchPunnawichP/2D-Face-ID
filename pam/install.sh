@@ -4,6 +4,7 @@
 # It uses sudo for each system change and touches only:
 #   /usr/local/libexec/faceauth, /usr/local/share/faceauth/, /usr/local/lib/pam/pam_faceauth.so,
 #   /etc/pam.d/sudo_local   (never /etc/pam.d/sudo)
+# The sudo enrollment itself is created later by `enroll --system` in /var/db/faceauth/.
 # BEFORE running: open a second Terminal and run `sudo -s` there, and keep it
 # open until you have tested that sudo still works (see README, "Recovery").
 set -eu
@@ -54,4 +55,8 @@ echo
 echo "Installed. /etc/pam.d/sudo_local is now:"
 cat /etc/pam.d/sudo_local
 echo
-echo "Test in a NEW Terminal tab: sudo -k; sudo true"
+echo "Next, enroll your face for sudo (root-owned copy in /var/db/faceauth/$(id -u)/):"
+echo "  sudo /usr/local/libexec/faceauth enroll --system"
+echo "  sudo /usr/local/libexec/faceauth calibrate --system"
+echo "Until then sudo simply asks for your password."
+echo "Then test in a NEW Terminal tab: sudo -k; sudo true"
