@@ -44,3 +44,22 @@ struct SetupCommandsTests {
         #expect(c.hasPrefix("sh '/tmp/x'\\''; rm -rf ~; echo '\\''/install.sh'"))
     }
 }
+
+@Suite("HUD policy under sudo")
+struct HUDPolicyTests {
+    @Test func neverUnderSetugid() {
+        #expect(!HUDPolicy.allowed(commandWantsHUD: true, noHUDFlag: false, systemCommand: false, setugid: true, guiSession: true))
+    }
+    @Test func normalUseShowsHUD() {
+        #expect(HUDPolicy.allowed(commandWantsHUD: true, noHUDFlag: false, systemCommand: false, setugid: false, guiSession: true))
+    }
+    @Test func otherReasonsToSkip() {
+        #expect(!HUDPolicy.allowed(commandWantsHUD: true, noHUDFlag: true, systemCommand: false, setugid: false, guiSession: true))
+        #expect(!HUDPolicy.allowed(commandWantsHUD: true, noHUDFlag: false, systemCommand: true, setugid: false, guiSession: true))
+        #expect(!HUDPolicy.allowed(commandWantsHUD: true, noHUDFlag: false, systemCommand: false, setugid: false, guiSession: false))
+        #expect(!HUDPolicy.allowed(commandWantsHUD: false, noHUDFlag: false, systemCommand: false, setugid: false, guiSession: true))
+    }
+    @Test func testRunnerIsNotSetugid() {
+        #expect(!HUDPolicy.processIsSetugid)
+    }
+}

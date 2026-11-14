@@ -55,8 +55,13 @@ if let fd = opts.storeFD {
 
 // The HUD is shown for enroll and verify (Q5), the demo, and the capture helper
 // (which shows root's enroll prompts). Root's --system process draws nothing.
-let wantsHUD = ["enroll", "verify", "hud-demo", "capture-helper"].contains(opts.command) && !opts.noHUD && !opts.system
-let gui = wantsHUD && GUISession.isAvailable
+let commandWantsHUD = ["enroll", "verify", "hud-demo", "capture-helper"].contains(opts.command)
+let setugid = HUDPolicy.processIsSetugid
+let gui = HUDPolicy.allowed(commandWantsHUD: commandWantsHUD, noHUDFlag: opts.noHUD, systemCommand: opts.system,
+                            setugid: setugid, guiSession: GUISession.isAvailable)
+if commandWantsHUD && setugid && !opts.noHUD && opts.verbose {
+    say("(Running under sudo: macOS does not allow the notch overlay here, so prompts are shown in the terminal.)")
+}
 if gui {
     NSApplication.shared.setActivationPolicy(.accessory) // no Dock icon, never takes focus
 }

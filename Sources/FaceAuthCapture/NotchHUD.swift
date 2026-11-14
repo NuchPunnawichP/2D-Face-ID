@@ -1,4 +1,5 @@
 import AppKit
+import FaceAuthCore
 import QuartzCore
 
 /// What the HUD shows.
@@ -296,7 +297,8 @@ public final class NotchHUD {
     /// Returns nil when there is no GUI session (SSH, headless) — the caller
     /// then uses text output only (R16).
     public static func make() -> NotchHUD? {
-        guard GUISession.isAvailable, let screen = NSScreen.screens.first else { return nil }
+        // Defence in depth: AppKit exits a setugid process (anything under sudo).
+        guard !HUDPolicy.processIsSetugid, GUISession.isAvailable, let screen = NSScreen.screens.first else { return nil }
         return NotchHUD(screen: screen)
     }
 
