@@ -1,7 +1,7 @@
 # faceauth — 2D webcam face unlock prototype for `sudo`, with a notch-style HUD
-Status: **approved** by the user in chat on 2026-11-14, spec revision 3.
+Status: **approved** by the user in chat on 2026-11-14, spec revision 4.
 
-Revision history: rev 2 approved 2026-11-14. Rev 3 approved 2026-11-14 changes only the blink closed level: rev 2 used a fixed 0.21, which can overlap the open level and let a static photo "blink" when the open-eye EAR is below about 0.26.
+Revision history: rev 2 approved 2026-11-14. Rev 4 approved 2026-11-14 adds the root-owned enrollment for sudo (section "Revision 4"), R23–R31, Q16–Q24 and A6; the rev 3 contract stays in force. Rev 3 approved 2026-11-14 changes only the blink closed level: rev 2 used a fixed 0.21, which can overlap the open level and let a static photo "blink" when the open-eye EAR is below about 0.26.
 
 **Operating goal.** A learning project: a Swift command-line tool `faceauth` that enrolls the owner's face from 5 live camera snaps and later verifies it with liveness checks. While it runs it shows a notch-style overlay at the top of the screen with a face-scan glyph. Milestone 2 lets `sudo` accept a face match through a PAM module, with the password still available as a fallback.
 
@@ -142,6 +142,87 @@ The enroll HUD shows "Snap n/5" with the pose instruction and five progress dots
 | R20 | Installing touches only `/etc/pam.d/sudo_local` (`auth sufficient`). The README documents uninstall and recovery (keep a `sudo -s` shell open). | Manual install with your OK; checksum of `/etc/pam.d/sudo` before and after | — | Transcript, checksums |
 | R21 | Unit tests cover cosine similarity, the EAR blink detector, the turn challenge, the motion check and the threshold decision, using recorded landmark data and no live camera. | `swift test` | — | Test output |
 | R22 | The README covers setup, usage, the chosen threshold, the model source and license, and security limitations: video replay, masks, look-alikes, and that a 2D webcam is weaker than a password, Touch ID or Face ID. | Review | — | README |
+
+## Revision 4 — root-owned enrollment for sudo (approved 2026-11-14)
+**Goal.** Close review finding 1. Today `sudo` trusts `enrollment.json` and `config.json` in the user's home folder. Any program running as the user can replace them, for example with embeddings of someone else's face, and that person could then pass `sudo`. Revision 4 gives `sudo` its own copy of the enrollment and config, owned by root, that a process running as the user cannot write.
+
+**Scope.**
+- A root-owned store for `sudo`.
+- `sudo faceauth enroll --system`, `sudo faceauth calibrate --system` and `sudo faceauth unenroll --system`.
+- The PAM module hands the root-owned data to the verifier; the verifier ignores the user store under `sudo`.
+- Under `sudo` and `--system`, only the built-in camera is used.
+- Install, uninstall and README updates.
+
+**Unchanged.** Plain `faceauth enroll | verify | calibrate` (no `sudo`) keep using the user store. Exit codes, liveness and the HUD stay as in revision 3.
+
+**Excluded.**
+- **Malware that controls the verifier process itself** (it runs as the user, because macOS camera permission is per user).
+- **Malware that feeds fake frames** through an installed camera extension. That needs your approval in System Settings, and the built-in-only rule (R31) blocks it.
+- Login window, lock screen and the authorization database remain out of scope.
+
+### Open questions (revision 4)
+| # | Question | Options | Proposed default | Answer |
+|---|---|---|---|---|
+| Q16 | Where the root-owned store lives | (a) `/var/db/faceauth/<uid>/`, directory 0700 root:wheel, files 0600 root:wheel; (b) `/Library/Application Support/faceauth/<uid>/` with the same modes | (a). `/var/db` is the conventional place for system-owned per-user data. | (a), user accepted default on 2026-11-14 |
+| Q17 | How the sudo enrollment is created | (a) fresh: `sudo faceauth enroll --system` captures 5 new snaps live and root writes the result; the user store is never read; (b) copy the user's existing enrollment after a live verify against it; (c) plain copy of the user's file | (a). Copying (b, c) would trust a file that malware may already have changed. | (a), user accepted default on 2026-11-14 |
+| Q18 | Where the sudo threshold and liveness settings come from | (a) `sudo faceauth calibrate --system` measures again and root saves the config, range-checked as in revision 3; (b) copy the user's `config.json` after range-checking it | (a), for the same reason as Q17 | (a), user accepted default on 2026-11-14 |
+| Q19 | How the root-owned data reaches the verifier, which runs as the user | (a) the PAM module (root) reads the files, checks owner and mode, and writes them to the child over a pipe on fd 3; the child reads only that pipe; (b) make the files readable by the user (0640, group = the user's group) and let the child read them | (a). The files stay 0600 root, and other users can't read your embeddings. | (a), user accepted default on 2026-11-14 |
+| Q20 | What `sudo` does when this user has no root store, or it is invalid | (a) `PAM_AUTH_ERR` without starting the verifier, so the password prompt follows; it never falls back to the user store; (b) fall back to the user store | (a) | (a), user accepted default on 2026-11-14 |
+| Q21 | Which process captures the camera for `--system` | (a) root forks a child that drops to the invoking user (`SUDO_UID`) to capture (camera permission is per user); the child sends embeddings and landmarks back over a pipe; root validates and writes; (b) capture directly as root | (a). Root's camera permission is separate and untested, and (a) mirrors how verify already runs under `sudo`. | (a), user accepted default on 2026-11-14 |
+| Q22 | Camera choice under `sudo` and `--system` | (a) only the built-in camera (`builtInWideAngleCamera`), no fallback; refuse with exit 2 if it is missing; (b) also allow external or Continuity cameras | (a). A virtual or external camera could replay video. | (a), user accepted default on 2026-11-14 |
+| Q23 | What uninstall does with the root store | (a) `uninstall.sh` deletes `/var/db/faceauth` after printing what it will delete and asking y/N; (b) keep it; (c) delete without asking | (a). It is biometric data, so it should not be left behind silently. | (a), user accepted default on 2026-11-14 |
+| Q24 | Size limit for the data sent over the pipe | (a) 64 KiB total; larger or malformed data → verifier exit 2; (b) other | (a). Today the enrollment is about 17 KB and the config under 1 KB. | (a), user accepted default on 2026-11-14 |
+
+### Contract additions (revision 4)
+**Root store.** `/var/db/faceauth/<uid>/`, with the location subject to Q16.
+- `/var/db/faceauth` and `<uid>/` are directories with mode 0700, owned by root:wheel.
+- `enrollment.json` and `config.json` are files with mode 0600, owned by root:wheel. Their formats are the same as in revision 3.
+- Any other owner, mode or symlink makes the store invalid.
+
+**`--system` commands.** These must run with euid 0 and `SUDO_UID` set (that is, through `sudo`); otherwise they exit 2.
+- `enroll --system` and `calibrate --system`:
+  1. Root starts a capture child as `SUDO_UID` (Q21), running this same root-owned binary.
+  2. The child streams FaceFrames and embeddings to root over a pipe.
+  3. Root runs the same selection, calibration and validation logic, then writes the root store atomically (temp file, then rename).
+- `unenroll --system` deletes this user's root store.
+
+**PAM flow.**
+
+| Source | Event | Guard | Update | Destination |
+|---|---|---|---|---|
+| Start | authenticate | binary safe (revision 3 rules) | — | LoadStore |
+| Start | authenticate | binary unsafe | — | AUTH_ERR |
+| LoadStore | read the root store for the target uid | dir and files root:wheel, 0700/0600, not symlinks, total ≤ 64 KiB | — | Spawn |
+| LoadStore | read | missing or invalid | syslog | AUTH_ERR (Q20) |
+| Spawn | fork | — | the child drops to the user; the store is written to fd 3, which is then closed; exec `faceauth verify --store-fd 3` | Wait |
+| Wait | child exit 0 within the timeout | — | — | SUCCESS |
+| Wait | any other exit, a signal or a timeout | — | kill on timeout | AUTH_ERR |
+
+**Verifier with `--store-fd N`.**
+- Reads at most 64 KiB from fd N, as a JSON object holding `enrollment` and `config`.
+- Applies the same validation as revision 3, plus the model ID and dimension checks.
+- Never reads the user store.
+- Uses only the built-in camera (Q22).
+- Malformed, oversized or invalid data → exit 2.
+
+**New assumption.**
+
+| ID | Claim | Evidence or owner | Affected |
+|---|---|---|---|
+| A6 | A child that `sudo faceauth … --system` drops to the user can use the camera under the user's Terminal camera permission (the same question as A2). | Tested at install time. If false, `--system` enrollment fails with exit 2 and this spec gets a revision. | R25, R26 |
+
+### Requirements (revision 4)
+| ID | Observable requirement | Formal property or test | Trigger reachability check | Acceptance evidence |
+|---|---|---|---|---|
+| R23 | Under `sudo`, the verifier uses only the store data passed by the PAM module; a changed or deleted user store has no effect on the result. | C test: a stub verifier echoes what it received on fd 3, and the module passes exactly the root-store bytes. Swift test: `--store-fd` decoding. Runtime check: tamper with the user store and confirm the sudo result does not change. | The user store exists and differs from the root store | Test output; transcript |
+| R24 | The PAM module refuses a root store with the wrong owner, wrong mode, a symlink, or more than 64 KiB: `PAM_AUTH_ERR`, and the verifier is not started. | C tests (unprivileged variant: owned by the test user) | Each invalid case is constructed | Test output |
+| R25 | `sudo faceauth enroll --system` captures 5 live snaps through a capture child running as `SUDO_UID` and writes the root store (0700/0600 root:wheel). It never reads the user store. Without `sudo` it exits 2. | Swift tests for the pipe protocol and validation; runtime check with `stat` and `ls` of the store; a run without `sudo` exits 2 | — | Test output; `stat` output |
+| R26 | `sudo faceauth calibrate --system` writes a range-checked root `config.json` with the same rules as R13. | Swift test of the shared validation; runtime check | — | Transcript |
+| R27 | With no root store for the user, `sudo` falls through to the password prompt without starting the verifier, and never uses the user store. | C test: a stub verifier whose start would be detected, with no store | The store directory is missing | Test output |
+| R28 | `--store-fd`: data over 64 KiB, malformed JSON, or out-of-range settings → exit 2. | Swift tests | Each case is constructed | Test output |
+| R29 | `sudo faceauth unenroll --system` removes this user's root store. `uninstall.sh` lists `/var/db/faceauth` and deletes it only after you answer y. | Runtime check | — | Transcript |
+| R30 | The README threat model states what revision 4 closes (data tampering by processes running as the user) and what remains (control of the verifier process, a physical or replayed face in front of the camera, and the revision 3 limits). | Review | — | README |
+| R31 | Under `sudo` (`--store-fd`) and with `--system`, only the built-in camera is used, with no fallback to the default, external, Continuity or virtual cameras; if there is no built-in camera, exit 2. | Unit test of the device-selection rule, using a fake device list | A list with only an external camera | Test output |
 
 ## Verification report
 Run on 2026-11-14 on branch `claude/faceauth-macos-prototype-82f9cd`. Local commits only: nothing has been pushed.

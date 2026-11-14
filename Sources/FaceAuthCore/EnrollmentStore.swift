@@ -16,6 +16,28 @@ public struct Enrollment: Codable, Equatable, Sendable {
     public var poses: [String]
     public var created: Date
 
+    /// Structural checks shared by every place an enrollment is loaded from.
+    public func check(source: String, expectedModelID: String? = nil, expectedDimension: Int? = nil) throws {
+        func finiteUnit(_ v: [Float]) -> Bool {
+            guard v.allSatisfy({ $0.isFinite }) else { return false }
+            let n = v.reduce(0.0) { $0 + Double($1) * Double($1) }.squareRoot()
+            return abs(n - 1) < 1e-3
+        }
+        guard formatVersion == Enrollment.formatVersion, dimension > 0,
+              embeddings.count == Enrollment.snapCount, mean.count == dimension,
+              embeddings.allSatisfy({ $0.count == dimension }),
+              embeddings.allSatisfy(finiteUnit), finiteUnit(mean) else {
+            throw StoreError.corrupt(path: source, reason: "wrong format, count or dimension")
+        }
+        if let expectedModelID, modelID != expectedModelID {
+            throw StoreError.modelMismatch(stored: modelID, current: expectedModelID)
+        }
+        if let expectedDimension, dimension != expectedDimension {
+            throw StoreError.corrupt(path: source,
+                                     reason: "embedding dimension \(dimension), but the model outputs \(expectedDimension)")
+        }
+    }
+
     public init?(modelID: String, embeddings: [[Float]], poses: [String], created: Date = Date()) {
         guard let dim = embeddings.first?.count,
               let normalized = Optional(embeddings.compactMap(Embeddings.normalized)),
@@ -193,11 +215,16 @@ public struct EnrollmentStore: Sendable {
 
     // MARK: Reading
 
-    /// Checks that `path` is owned by us and its mode is exactly `mode`.
+    /// When set (root store), files and directories must also have this group.
+    public var requiredGroup: gid_t?
+
+    /// Checks that `path` is not a symlink, is owned by us and its mode is exactly `mode`.
     func checkSecure(_ path: String, mode: Int) throws {
         var st = stat()
-        guard stat(path, &st) == 0 else { throw StoreError.io("Cannot stat \(path)") }
+        guard lstat(path, &st) == 0 else { throw StoreError.io("Cannot stat \(path)") }
+        if (st.st_mode & S_IFMT) == S_IFLNK { throw StoreError.corrupt(path: path, reason: "is a symbolic link") }
         if st.st_uid != getuid() { throw StoreError.wrongOwner(path: path) }
+        if let g = requiredGroup, st.st_gid != g { throw StoreError.wrongOwner(path: path) }
         let m = Int(st.st_mode) & 0o777
         if m != mode { throw StoreError.insecurePermissions(path: path, mode: m) }
     }
@@ -212,18 +239,7 @@ public struct EnrollmentStore: Sendable {
         } catch {
             throw StoreError.corrupt(path: enrollmentURL.path, reason: "\(error)")
         }
-        guard e.formatVersion == Enrollment.formatVersion,
-              e.embeddings.count == Enrollment.snapCount, e.mean.count == e.dimension,
-              e.embeddings.allSatisfy({ $0.count == e.dimension }) else {
-            throw StoreError.corrupt(path: enrollmentURL.path, reason: "wrong format or dimension")
-        }
-        if let expectedModelID, e.modelID != expectedModelID {
-            throw StoreError.modelMismatch(stored: e.modelID, current: expectedModelID)
-        }
-        if let expectedDimension, e.dimension != expectedDimension {
-            throw StoreError.corrupt(path: enrollmentURL.path,
-                                     reason: "embedding dimension \(e.dimension), but the model outputs \(expectedDimension)")
-        }
+        try e.check(source: enrollmentURL.path, expectedModelID: expectedModelID, expectedDimension: expectedDimension)
         return e
     }
 
