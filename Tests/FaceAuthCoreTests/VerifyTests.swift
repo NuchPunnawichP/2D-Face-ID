@@ -3,7 +3,7 @@ import Testing
 @testable import FaceAuthCore
 
 /// A scripted live attempt: baseline, blink, frontal frames, then the turn.
-private func liveScript(challenge: TurnDirection, start: Double = 100, fps: Double = 30,
+func liveScript(challenge: TurnDirection, start: Double = 100, fps: Double = 30,
                         turnSign: Double = 1, ears: [Double]? = nil) -> [FaceFrame] {
     let earSeq = ears ?? ([0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.1, 0.08, 0.3] + Array(repeating: 0.3, count: 10))
     var frames: [FaceFrame] = []
@@ -171,3 +171,55 @@ struct VerifyKernelTests {
         #expect(checked == 32 * 5 * 64)
     }
 }
+
+// MARK: R16 — prompts (HUD) can never change the verdict
+
+private struct HUDBroken: Error {}
+
+@Suite("Verify controller (R16)")
+struct VerifyControllerTests {
+    /// Runs the same scripted attempt with a working and a throwing prompt sink.
+    func outcomes(challenge: TurnDirection, script: [FaceFrame], probe: [Float]? = nil) -> (VerifyOutcome, VerifyOutcome, Int) {
+        let base = Synthetic.embedding(seed: 7)
+        func make(_ sink: @escaping (Prompt) throws -> Void) -> VerifyController {
+            VerifyController(session: VerifySession(challenge: challenge, enrollment: Synthetic.enrollment(base: base), threshold: 0.6),
+                             prompt: sink)
+        }
+        func run(_ c: inout VerifyController) -> VerifyOutcome {
+            var o = VerifyOutcome.pending
+            for (i, f) in script.enumerated() {
+                let e = c.session.wantsEmbedding(f) ? Synthetic.near(probe ?? base, similarity: 0.85, seed: UInt64(500 + i)) : nil
+                o = c.handle(frame: f, embedding: e)
+            }
+            if !o.isFinal { o = c.handle(tick: script.last!.time + 10) }
+            return o
+        }
+        var ok = make { _ in }
+        var broken = make { _ in throw HUDBroken() }
+        let a = run(&ok), b = run(&broken)
+        return (a, b, broken.promptFailures)
+    }
+
+    @Test func successUnchangedWhenHUDThrows() {
+        let (a, b, failures) = outcomes(challenge: .left, script: liveScriptForTests(.left))
+        #expect(a == .success && b == .success)
+        #expect(failures == 3) // look, challenge, result
+    }
+
+    @Test func failureUnchangedWhenHUDThrows() {
+        let (a, b, _) = outcomes(challenge: .left, script: liveScriptForTests(.right))
+        #expect(a == .wrongTurn && b == .wrongTurn)
+        let (c, d, _) = outcomes(challenge: .left, script: liveScriptForTests(.left), probe: Synthetic.embedding(seed: 999))
+        #expect(c == .timeout && d == .timeout)
+    }
+
+    @Test func promptsInOrder() {
+        let base = Synthetic.embedding(seed: 7)
+        var c = VerifyController(session: VerifySession(challenge: .right, enrollment: Synthetic.enrollment(base: base), threshold: 0.6), prompt: { _ in })
+        c.start()
+        c.handle(tick: 0)
+        #expect(c.prompts == [.lookAtCamera, .challenge(.right)])
+    }
+}
+
+func liveScriptForTests(_ c: TurnDirection) -> [FaceFrame] { liveScript(challenge: c) }

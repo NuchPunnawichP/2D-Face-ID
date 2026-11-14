@@ -81,8 +81,13 @@ public struct EnrollmentStore: Sendable {
         self.directory = directory
     }
 
+    /// `FACEAUTH_STORE_DIR` overrides the location (used by tests). The
+    /// ownership and permission checks apply wherever the store is.
     public static var defaultDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let d = ProcessInfo.processInfo.environment["FACEAUTH_STORE_DIR"], !d.isEmpty {
+            return URL(fileURLWithPath: d, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/faceauth", isDirectory: true)
     }
 
