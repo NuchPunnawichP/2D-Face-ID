@@ -1,5 +1,7 @@
 # faceauth — 2D webcam face unlock prototype for `sudo`, with a notch-style HUD
-Status: **approved** by the user in chat on 2026-11-14, spec revision 2.
+Status: **approved** by the user in chat on 2026-11-14, spec revision 3.
+
+Revision history: rev 2 approved 2026-11-14. Rev 3 approved 2026-11-14 changes only the blink closed level: rev 2 used a fixed 0.21, which can overlap the open level and let a static photo "blink" when the open-eye EAR is below about 0.26.
 
 **Operating goal.** A learning project: a Swift command-line tool `faceauth` that enrolls the owner's face from 5 live camera snaps and later verifies it with liveness checks. While it runs it shows a notch-style overlay at the top of the screen with a face-scan glyph. Milestone 2 lets `sudo` accept a face match through a PAM module, with the password still available as a fallback.
 
@@ -82,7 +84,7 @@ Status: **approved** by the user in chat on 2026-11-14, spec revision 2.
 | any | camera/model error | — | — | Error (2) |
 
 Liveness and match definitions. These are the starting values; R13 lets calibration tune the numeric thresholds.
-- **Blink:** EAR is ≥ open level, then < 0.21 for 1–8 consecutive valid frames, then back ≥ open level. Open level = the median EAR over the first 5 valid frames × 0.8.
+- **Blink:** EAR is ≥ open level, then < closed level for 1–8 consecutive valid frames, then back ≥ open level. Baseline = the median EAR over the first 5 valid frames. Open level = baseline × 0.8. Closed level = min(0.21, baseline × 0.7), so closed is always below open (rev 3).
 - **Turn:** yaw ≥ +20° for "left" or ≤ −20° for "right", held for ≥ 3 consecutive valid frames. The sign convention is fixed by a recorded fixture.
 - **Motion:** the standard deviation of the inter-ocular-normalized landmark positions over a 1 s window is above a minimum. A static photo stays below it, and a live face exceeds it during the blink and turn anyway.
 - **Match:** cosine(mean of the frontal embeddings, enrolled mean) ≥ threshold, and also the maximum cosine against any of the 5 individual enrolled embeddings ≥ threshold.
