@@ -335,7 +335,7 @@ make -C pam test
 - **Finding 1:** resolved by revision 4; see below.
 
 ### Revision 4 verification (2026-11-14)
-Commits `9350d5c`, `3779283`, a PAM commit, `723fe26` and `573a60e` on the same branch, all local.
+Commits `9350d5c`, `3779283`, `a1ab722`, `723fe26` and `573a60e` on the same branch, all local.
 
 | Check | Command | Result |
 |---|---|---|
