@@ -86,6 +86,7 @@ struct SetupView: View {
                     Text("faceauth").font(.system(size: 26, weight: .bold))
                     Text("2D face unlock for sudo — a learning prototype")
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Label(status.summary, systemImage: status.binaryInstalled && status.pamLine
                           ? "checkmark.circle.fill" : "circle.dashed")
                         .foregroundStyle(status.binaryInstalled && status.pamLine ? .green : .secondary)
@@ -96,6 +97,8 @@ struct SetupView: View {
             Text("Weaker than your password, Touch ID or Face ID: a video of you can pass. "
                  + "The login window and lock screen are not touched. If the face check fails, sudo asks for your password.")
                 .font(.callout)
+                // Wrap to as many lines as needed; never truncate with "…".
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.15)))
@@ -116,9 +119,11 @@ struct SetupView: View {
             }
             if let error {
                 Text(error).foregroundStyle(.red).font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("Each button opens Terminal for that step; type your password there.")
                 .font(.footnote).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(24)
         .frame(width: 560)
