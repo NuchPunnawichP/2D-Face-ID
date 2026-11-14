@@ -103,6 +103,8 @@ public enum StoreError: Error, CustomStringConvertible, Equatable {
     case corrupt(path: String, reason: String)
     case modelMismatch(stored: String, current: String)
     case invalidSettings(path: String, names: [String])
+    /// The root store passed by the PAM module is unusable (SPEC rev 4).
+    case invalidSystemStore(String)
     case io(String)
 
     public var description: String {
@@ -121,6 +123,8 @@ public enum StoreError: Error, CustomStringConvertible, Equatable {
             return "The enrollment was made with model \(s) but the current model is \(c). Run: faceauth enroll"
         case .invalidSettings(let p, let names):
             return "\(p) has settings outside their allowed range (\(names.joined(separator: ", "))). Run: faceauth calibrate"
+        case .invalidSystemStore(let why):
+            return "The sudo enrollment is unusable (\(why)). Run: sudo /usr/local/libexec/faceauth enroll --system, then calibrate --system"
         case .io(let m):
             return m
         }

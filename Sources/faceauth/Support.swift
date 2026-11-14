@@ -28,6 +28,9 @@ struct Options {
     var label: String?
     var seconds: Double?
     var threshold: Double?
+    var system = false
+    var storeFD: Int32?
+    var uid: uid_t?
 
     static func parse(_ args: [String]) throws -> Options {
         var o = Options()
@@ -46,6 +49,13 @@ struct Options {
             case "--threshold":
                 guard let v = it.next(), let d = Double(v), d > -1, d < 1 else { throw Failure("--threshold needs a number in (-1, 1)") }
                 o.threshold = d
+            case "--system": o.system = true
+            case "--store-fd":
+                guard let v = it.next(), let fd = Int32(v), fd >= 3, fd < 1024 else { throw Failure("--store-fd needs a descriptor number >= 3") }
+                o.storeFD = fd
+            case "--uid":
+                guard let v = it.next(), let u = uid_t(v) else { throw Failure("--uid needs a number") }
+                o.uid = u
             case "-h", "--help": o.command = "help"; first = false
             default:
                 if a.hasPrefix("-") { throw Failure("Unknown option \(a)") }
@@ -67,6 +77,11 @@ commands:
   hud-demo               Show the notch HUD going through its states
   hud-snapshots DIR      Render each HUD state to PNG files in DIR
   self-test              Load the face model and time one embedding (no camera)
+
+for sudo (run the installed copy with sudo; uses a root-owned store):
+  enroll --system        5 fresh snaps for sudo, saved to /var/db/faceauth/<uid>/
+  calibrate --system     Choose the threshold sudo uses
+  unenroll --system      Delete your sudo enrollment
 
 options:
   --no-hud               Text prompts only
@@ -113,11 +128,63 @@ final class UI: @unchecked Sendable {
     }
 }
 
+/// Where prompts go: the local HUD and stderr, or a capture helper's HUD.
+protocol Prompter: AnyObject, Sendable {
+    var verbose: Bool { get }
+    func show(_ state: HUDState)
+    func finish(_ state: HUDState) async
+    func log(_ s: String)
+}
+
+extension UI: Prompter {}
+
+/// One analysed frame plus a way to get its embedding.
+struct SourceFrame {
+    let frame: FaceFrame
+    let embed: () throws -> [Float]?
+}
+
+/// Frames for enroll and calibrate: from the local camera, or streamed by a
+/// capture helper running as the user (`--system`, SPEC rev 4 Q21).
+protocol FrameSource: AnyObject, Sendable {
+    func start() async throws
+    func first(timeout: Double) async throws -> SourceFrame
+    func next() async throws -> SourceFrame?
+    func stop()
+}
+
+/// The local camera + Vision + Core ML.
+final class LocalSource: FrameSource, @unchecked Sendable {
+    let pipe: FramePipeline
+    let embedder: Embedder
+
+    init(embedder: Embedder, builtInOnly: Bool = false) {
+        self.embedder = embedder
+        pipe = FramePipeline(builtInOnly: builtInOnly)
+    }
+
+    private func wrap(_ x: (CameraFrame, FaceAnalyzer.Result)) -> SourceFrame {
+        let (cf, r) = x
+        let e = embedder
+        return SourceFrame(frame: r.frame) { try embedding(e, cf, r) }
+    }
+
+    func start() async throws { try await pipe.start() }
+    func first(timeout: Double) async throws -> SourceFrame { wrap(try await pipe.first(timeout: timeout)) }
+    func next() async throws -> SourceFrame? { try await pipe.next().map(wrap) }
+    func stop() { pipe.stop() }
+}
+
 /// Camera frames analysed by Vision, one at a time.
 final class FramePipeline: @unchecked Sendable {
     let camera = Camera()
     let analyzer = FaceAnalyzer()
     private var iterator: AsyncStream<CameraFrame>.AsyncIterator?
+
+    /// Only the built-in camera (sudo / --system, SPEC R31).
+    init(builtInOnly: Bool = false) {
+        camera.builtInOnly = builtInOnly
+    }
 
     func start() async throws {
         try await Camera.ensurePermission()

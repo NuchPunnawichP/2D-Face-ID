@@ -55,6 +55,19 @@ public struct StoreBundle: Codable, Sendable {
 
     /// Decodes and validates. Any problem throws (the verifier exits 2).
     public static func decode(_ data: Data, expectedModelID: String? = nil, expectedDimension: Int? = nil) throws -> StoreBundle {
+        do {
+            return try decodeChecked(data, expectedModelID: expectedModelID, expectedDimension: expectedDimension)
+        } catch let e as StoreError {
+            switch e {
+            case .corrupt(_, let r): throw StoreError.invalidSystemStore(r)
+            case .invalidSettings(_, let n): throw StoreError.invalidSystemStore("settings out of range: \(n.joined(separator: ", "))")
+            case .modelMismatch(let s, let c): throw StoreError.invalidSystemStore("made with model \(s), current model is \(c)")
+            default: throw e
+            }
+        }
+    }
+
+    static func decodeChecked(_ data: Data, expectedModelID: String?, expectedDimension: Int?) throws -> StoreBundle {
         guard data.count <= maxBytes else {
             throw StoreError.corrupt(path: "store fd", reason: "more than \(maxBytes) bytes")
         }
@@ -62,7 +75,7 @@ public struct StoreBundle: Codable, Sendable {
         do {
             b = try EnrollmentStore.decoder.decode(StoreBundle.self, from: data)
         } catch {
-            throw StoreError.corrupt(path: "store fd", reason: "malformed: \(error)")
+            throw StoreError.corrupt(path: "store fd", reason: "malformed data")
         }
         try b.enrollment.check(source: "store fd", expectedModelID: expectedModelID, expectedDimension: expectedDimension)
         let bad = b.config.invalidSettings()

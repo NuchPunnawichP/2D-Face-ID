@@ -1,4 +1,5 @@
 import AVFoundation
+import FaceAuthCore
 import CoreMedia
 import Foundation
 
@@ -74,18 +75,36 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    static func frontCamera() -> AVCaptureDevice? {
+    /// Built-in transport type ('bltn').
+    static let builtInTransport: Int32 = 0x626C_746E
+
+    /// Picks the camera with `CameraSelection` (SPEC R31). With `builtInOnly`,
+    /// only the Mac's own camera qualifies: no external, Continuity or virtual
+    /// camera, and no fallback to the system default.
+    static func selectCamera(builtInOnly: Bool) -> AVCaptureDevice? {
         let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera], mediaType: .video, position: .unspecified)
-        // Macs report the built-in FaceTime camera as .front or .unspecified.
-        return discovery.devices.first { $0.position == .front }
-            ?? discovery.devices.first { !$0.localizedName.localizedCaseInsensitiveContains("iphone") }
-            ?? AVCaptureDevice.default(for: .video)
+            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
+            mediaType: .video, position: .unspecified)
+        let devices = discovery.devices
+        let candidates = devices.map { d in
+            CameraCandidate(name: d.localizedName,
+                            isBuiltInWideAngle: d.deviceType == .builtInWideAngleCamera,
+                            isBuiltInTransport: d.transportType == builtInTransport,
+                            isContinuity: d.isContinuityCamera)
+        }
+        return CameraSelection.choose(candidates, builtInOnly: builtInOnly).map { devices[$0] }
     }
+
+    /// Only the built-in camera (sudo and --system). Set before `start()`.
+    public var builtInOnly = false
 
     /// Starts capturing and returns the frame stream.
     public func start() throws -> AsyncStream<CameraFrame> {
-        guard let device = Self.frontCamera() else { throw CaptureError.noCamera }
+        guard let device = Self.selectCamera(builtInOnly: builtInOnly) else {
+            throw builtInOnly
+                ? CaptureError.cannotConfigure("no built-in camera found (only the Mac's own camera is allowed here)")
+                : CaptureError.noCamera
+        }
         session.beginConfiguration()
         if session.canSetSessionPreset(.vga640x480) { session.sessionPreset = .vga640x480 }
         let input: AVCaptureDeviceInput

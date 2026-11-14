@@ -15,7 +15,7 @@ public final class Embedder: @unchecked Sendable {
 
     /// The root-owned model next to a root-owned binary (installed for sudo).
     /// When it exists, it is the only model used and user locations are ignored.
-    static func installedModelURL() -> URL? {
+    public static func installedModelURL() -> URL? {
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let model = exe.deletingLastPathComponent().appendingPathComponent("../share/faceauth/MobileFaceNet.mlpackage").standardized
         func rootOwned(_ p: String) -> Bool {

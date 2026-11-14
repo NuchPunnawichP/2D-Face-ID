@@ -15,15 +15,28 @@ actor VerifyState {
     var session: VerifySession { controller.session }
 }
 
-func runVerify(ui: UI) async throws -> Int32 {
+/// - Parameter storeData: under sudo, the root-store bundle the PAM module wrote
+///   to `--store-fd` (SPEC rev 4). Then the user store is never read and only
+///   the built-in camera is used.
+func runVerify(ui: UI, storeData: Data? = nil) async throws -> Int32 {
     // Show the HUD first, before anything slow (R14).
     ui.show(.scanning(Prompt.lookAtCamera.text))
-    let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
-    let config = try store.loadConfig()            // Q11: refuse until calibrated
     let embedder = try Embedder.load()
-    let enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID, expectedDimension: embedder.dimension)
-    if config.modelID != embedder.modelID {
-        throw Failure("The threshold was calibrated for model \(config.modelID); run faceauth calibrate again.")
+    let config: FaceAuthConfig
+    let enrollment: Enrollment
+    if let storeData {
+        let bundle = try StoreBundle.decode(storeData, expectedModelID: embedder.modelID,
+                                            expectedDimension: embedder.dimension)
+        config = bundle.config
+        enrollment = bundle.enrollment
+        ui.log("using the root store passed on the store fd")
+    } else {
+        let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
+        config = try store.loadConfig()            // Q11: refuse until calibrated
+        enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID, expectedDimension: embedder.dimension)
+        if config.modelID != embedder.modelID {
+            throw Failure("The threshold was calibrated for model \(config.modelID); run faceauth calibrate again.")
+        }
     }
 
     let challenge = TurnDirection.random()
@@ -36,7 +49,7 @@ func runVerify(ui: UI) async throws -> Int32 {
         }
     })
 
-    let pipe = FramePipeline()
+    let pipe = FramePipeline(builtInOnly: storeData != nil) // R31
     try await pipe.start()
     defer { pipe.stop() }
     let (cf0, r0) = try await pipe.first(timeout: 3) // Q7: 3 s camera start limit → exit 2
