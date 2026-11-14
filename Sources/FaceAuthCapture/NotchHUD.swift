@@ -58,8 +58,8 @@ public struct HUDGeometry: Equatable {
 
 /// The face-scan glyph: our own drawing (SPEC Q2a) — rounded corner
 /// brackets, two round eyes, a short nose and a smile. Drawn in a 100×100 box.
-enum Glyph {
-    static func face(in r: CGRect) -> CGPath {
+public enum Glyph {
+    public static func face(in r: CGRect) -> CGPath {
         let p = CGMutablePath()
         let s = r.width / 100
         func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: r.minX + x * s, y: r.minY + y * s) }
@@ -83,7 +83,7 @@ enum Glyph {
         return p
     }
 
-    static func check(in r: CGRect) -> CGPath {
+    public static func check(in r: CGRect) -> CGPath {
         let p = CGMutablePath()
         let s = r.width / 100
         p.move(to: CGPoint(x: r.minX + 24 * s, y: r.minY + 50 * s))
@@ -92,7 +92,7 @@ enum Glyph {
         return p
     }
 
-    static func cross(in r: CGRect) -> CGPath {
+    public static func cross(in r: CGRect) -> CGPath {
         let p = CGMutablePath()
         let s = r.width / 100
         p.move(to: CGPoint(x: r.minX + 30 * s, y: r.minY + 30 * s))

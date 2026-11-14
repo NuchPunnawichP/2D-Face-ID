@@ -10,6 +10,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "faceauth", targets: ["faceauth"]),
+        .executable(name: "FaceAuthSetup", targets: ["FaceAuthSetup"]),
     ],
     targets: [
         // Pure logic: no camera, no Vision, no AppKit. Fully unit-tested.
@@ -25,6 +26,8 @@ let package = Package(
                 "-Xlinker", "\(root)/Sources/faceauth/Info.plist",
             ])]
         ),
+        // faceauth.app: a setup window that runs each step in Terminal.
+        .executableTarget(name: "FaceAuthSetup", dependencies: ["FaceAuthCore", "FaceAuthCapture"]),
         .testTarget(
             name: "FaceAuthCoreTests",
             dependencies: ["FaceAuthCore"],

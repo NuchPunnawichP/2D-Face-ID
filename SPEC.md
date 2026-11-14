@@ -224,6 +224,18 @@ The enroll HUD shows "Snap n/5" with the pose instruction and five progress dots
 | R30 | The README threat model states what revision 4 closes (data tampering by processes running as the user) and what remains (control of the verifier process, a physical or replayed face in front of the camera, and the revision 3 limits). | Review | — | README |
 | R31 | Under `sudo` (`--store-fd`) and with `--system`, only the built-in camera is used, with no fallback to the default, external, Continuity or virtual cameras; if there is no built-in camera, exit 2. | Unit test of the device-selection rule, using a fake device list | A list with only an external camera | Test output |
 
+## Packaging note — faceauth.app (2026-11-14)
+On your request ("just build an app.dmg"), a setup app was added without a separate spec revision. It does not change any requirement above:
+- `FaceAuthSetup` (faceauth.app) only opens Terminal with the existing commands (`SetupStep`): `sudo -s`, `install.sh`, `enroll --system`, `calibrate --system`, `sudo -k; sudo true` and `uninstall.sh`.
+- Passwords are typed into `sudo` in Terminal; the app never handles them.
+- The app shows whether faceauth is installed (the binary exists and `sudo_local` has the line).
+- Evidence:
+  - `SetupCommandsTests`: exact commands, shell quoting, no `sudo -S`, and no command injection through the resource path.
+  - Offscreen render `docs/app-window.png`.
+  - The app launched from the mounted DMG.
+  - `codesign --verify --deep --strict` passed.
+- Not exercised: clicking each button, which opens Terminal and `sudo`.
+
 ## Verification report
 Run on 2026-11-14 on branch `claude/faceauth-macos-prototype-82f9cd`. Local commits only: nothing has been pushed.
 

@@ -180,6 +180,29 @@ When you run `sudo`, `pam_faceauth.so`:
    `sudo /usr/local/libexec/faceauth unenroll --system`.
 4. Test in a **new** tab: `sudo -k; sudo true`.
 
+### Install with the app (easiest)
+
+`sh scripts/make_app_dmg.sh 0.1.0` builds `dist/faceauth-app-0.1.0.dmg`.
+
+1. Open the DMG and drag **faceauth.app** onto Applications.
+2. Open faceauth from Applications. Its window has the same steps as above:
+   1. Open a safety shell
+   2. Install for sudo
+   3. Enroll my face
+   4. Calibrate
+   5. Test sudo
+
+   It also has **Remove everything…** and **Open README**.
+
+![faceauth.app window](docs/app-window.png)
+
+Each button opens a Terminal window that runs that one step, and you type your
+password into `sudo` there. The app itself never asks for, sees or stores a
+password. It also shows whether faceauth is installed for sudo.
+
+The installer, binary and model are all inside the app bundle. The app is
+ad-hoc signed and not notarized, so it is meant for the Mac that built it.
+
 ### Install from a DMG
 
 `sh scripts/make_dmg.sh 0.1.0` builds `dist/faceauth-0.1.0.dmg` (git-ignored) and
