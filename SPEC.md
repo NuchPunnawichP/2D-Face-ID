@@ -313,7 +313,7 @@ make -C pam test
 
 | # | Finding | Severity | Disposition |
 |---|---|---|---|
-| 1 | Security rests on user-writable files: config tunables, user model and cache, enrollment | high | **Partly fixed.** Config is range-checked; the installed root-owned model is used exclusively and compiled fresh. **Still open:** the enrollment is user-writable, so malware running as the user could enroll another face for `sudo`. Closing this needs a root-owned enrollment copy, which is a design change that needs a new spec revision. |
+| 1 | Security rests on user-writable files: config tunables, user model and cache, enrollment | high | **Fixed in rev 4.** Config is range-checked; `sudo` now uses a root-owned enrollment and config, and an installed root-owned compiled model (see the rev 4 report below). |
 | 2 | Recorded fixtures absent; the yaw sign comes from calibrate, not a fixture | medium | **Open** (needs you): see Outstanding gaps. |
 | 3 | A tilted static photo may fake a blink or turn | medium | **Open** (untested; spec gap). README corrected; it no longer claims tilting is cancelled. |
 | 4 | Embedding and camera errors gave exit 1, not 2 | medium | **Fixed.** |
@@ -332,4 +332,56 @@ make -C pam test
 - **R2:** deny camera permission once and check for exit 2.
 - **R14:** check the HUD over a full-screen app and on an external display.
 - **R20 / A2:** run `pam/install.sh` (asks for sudo) with a `sudo -s` shell open, then test `sudo -k; sudo true`.
-- **Finding 1:** decide whether to add a root-owned enrollment for `sudo` (spec revision 4).
+- **Finding 1:** resolved by revision 4; see below.
+
+### Revision 4 verification (2026-11-14)
+Commits `9350d5c`, `3779283`, a PAM commit, `723fe26` and `573a60e` on the same branch, all local.
+
+| Check | Command | Result |
+|---|---|---|
+| Build | `swift build`, `swift build -c release` | Both complete with no errors. |
+| Unit tests | `./scripts/test.sh` | 93 tests in 17 suites passed; 6 recorded-fixture tests skipped. One earlier run crashed with SIGPIPE (signal 13) in `readStopsAfterTheLimit`. That also exposed a real risk: a SIGPIPE in the PAM module would kill `sudo`. Fixed with `F_SETNOSIGPIPE` in both the test and the module. |
+| Formal model | `python3 formal/verify_model.py` (and `--faulty`) | R10 and R11 still satisfied: 3875 states, exit 0. The seeded fault still gives exit 1. The decision logic did not change in rev 4. |
+| PAM module | `make -C pam test` | 27/27 checks passed. They include the exact fd-3 bundle; a verifier that never reads a 60 KB store is killed at 2.01 s with no hang; and 8 invalid-store cases (missing, wrong modes, symlink, over 64 KiB, empty, store root mode 0755) each return AUTH_ERR **without starting the verifier**. |
+| CLI preconditions | `faceauth enroll/calibrate --system` without sudo; `unenroll` without `--system`; `--system` on verify; `--store-fd` on enroll | All exit 2 with a message. |
+| `--store-fd` | malformed, oversize (70 KB), wrong-model bundle on fd 3 | Exit 2 before the camera opens. |
+| Installed-model rule | valid bundle on fd 3 from a non-installed binary; `capture-helper` run by the user; `install-model` without root | All exit 2 ("installed face model is missing or not root-owned" / "must run as root"). |
+| Development path | `faceauth self-test` | Unchanged: 128-d, norm 1.0000, about 5 ms per frame. |
+
+| ID | Status | Exhaustive or bounded | Implementation evidence | Formal evidence | Outstanding gap |
+|---|---|---|---|---|---|
+| R23 | passed tests + runtime (error paths) | — | C: fd 3 carries exactly `{enrollment, config}` from the root store; Swift `StoreBundleTests`; `--store-fd` never reads the user store or starts first-run enrollment (code path); sudo-side processes use only the installed model | — | Not run under real `sudo`. The runtime check (tamper with the user store, sudo result unchanged) needs install. |
+| R24 | passed tests | bounded (8 constructed cases) | `make -C pam test` invalid-store cases; Swift `SystemStoreTests.symlinkedFileIsRefused` | — | The root:wheel owner check only runs as root, so it is untested here. |
+| R25 | partially verified | — | Without sudo → exit 2; helper protocol and frame validation tests; root writes via the O_EXCL temp file then rename, then chown 0:0 | — | Live `sudo … enroll --system` not run (needs your OK, your face, and A6) |
+| R26 | partially verified | — | Shared calibrate code with range checks (`HardeningTests`) | — | Live `calibrate --system` not run |
+| R27 | passed tests | — | C: "no store for this user → AUTH_ERR, verifier not started" | — | Not under real `sudo` |
+| R28 | passed tests + runtime | — | `StoreBundleTests` (oversize, malformed, ranges, model and dimension, non-unit vectors, pipe read limit); runtime exit 2 on fd 3 | — | — |
+| R29 | partially verified | — | `SystemStoreTests.unenrollRemovesOnlyThatUser`; uninstall lists the store and asks y/N; EOF keeps the data | — | Live `unenroll --system` and uninstall not run |
+| R30 | passed (review) | — | README "What the root-owned copy fixes" / "What it does not fix", including helper-computed embeddings and helper or verifier control | — | — |
+| R31 | passed tests | — | `CameraSelectionTests` (external, virtual, Continuity, empty → none in strict mode); wired in `Camera.selectCamera` for `--store-fd` and the helper | — | Whether a legacy DAL virtual camera can report built-in transport is not verified |
+
+**Interpretations made during implementation (rev 4).**
+- **Model under sudo:** the verifier and the capture helper must use the installed model. `install.sh` compiles it once as root (`faceauth install-model`), and the result must be root-owned with root-owned parent directories. Under `sudo` there is no compile step and no user-writable cache. This follows from the rev 4 goal; the review showed that model files, not just data, could be swapped.
+- **Helper limits:** the capture helper gets 10 s for its first frame (process start, model load and camera). After that, 3 s with no frame is an error. Q7's 3 s limit applies to `verify`, which is unchanged.
+
+**Independent review (rev 4).** A separate agent reviewed `git diff 184a685..HEAD` against revision 4. It was given the spec and the diff, not my conclusions. I checked all 8 findings against the code.
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | Verifier and helper could fall back to user-writable models or caches if the installed model check failed; parent directories not checked | medium | **Fixed** (installed precompiled model only, full root chain; runtime exit 2 checks) |
+| 2 | Compiling as the user in the user's temp directory: race to swap the compiled weights | medium (uncertain) | **Fixed** (no compile under sudo; root compiles at install) |
+| 3 | Helper exited before showing the result HUD | low | **Fixed** |
+| 4 | 3 s first-frame limit too short for helper start-up | low (uncertain) | **Fixed** (10 s for the helper) |
+| 5 | Unbounded frame buffer; blocking command writes; no frame-gap timeout | low | **Fixed** |
+| 6 | README overstated root's checks and the model's root chain | low | **Fixed** |
+| 7 | `uninstall.sh` aborted on EOF at the y/N prompt | low | **Fixed** |
+| 8 | PAM child closed descriptors only up to 255 | low | **Fixed** (`getdtablesize`) |
+
+**Outstanding gaps (rev 4).** These all need sudo and your face; I have not run them.
+1. Open a `sudo -s` shell first.
+2. Run `sh pam/install.sh`. It must print no WARNING about parent directories.
+3. Run `sudo /usr/local/libexec/faceauth enroll --system`, which also tests A6.
+4. Run `sudo /usr/local/libexec/faceauth calibrate --system`.
+5. Run `sudo -k; sudo true` (and try a phone photo).
+6. Tamper with `~/Library/Application Support/faceauth/` and confirm `sudo` behaves the same (R23).
+7. Run `sudo /usr/local/libexec/faceauth unenroll --system` and confirm `sudo` asks for the password (R27, R29).
