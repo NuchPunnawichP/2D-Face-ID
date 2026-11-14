@@ -9,6 +9,7 @@
 
 int faceauth_check_binary(const char *path);
 int faceauth_status_to_pam(int status);
+int faceauth_tty_ok(const char *tty);
 long faceauth_load_store(const char *root, uid_t uid, char *out, size_t cap);
 int faceauth_run(const char *path, const struct passwd *pw, int timeout_s, const char *data, size_t len);
 #endif

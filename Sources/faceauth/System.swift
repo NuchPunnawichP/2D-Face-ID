@@ -118,28 +118,36 @@ final class RemoteSource: FrameSource, @unchecked Sendable {
         return try await withTimeout(Self.frameGapSeconds) { try await self.nextRaw() }
     }
 
-    /// The helper also has to start, load the model and open the camera, so
-    /// it gets a longer limit than the local 3 s.
-    static let helperStartSeconds = 10.0
+    private enum Raced { case frame(SourceFrame?), timedOut }
+
+    /// The helper also has to start, load the model, open the camera and, the
+    /// first time, wait for the user to answer macOS's camera-permission
+    /// dialog, so it gets a much longer limit than the local 3 s.
+    static let helperStartSeconds = 60.0
     /// After the first frame, no frame for this long means the helper is stuck.
     static let frameGapSeconds = 3.0
 
     func first(timeout: Double) async throws -> SourceFrame {
-        try await withTimeout(max(timeout, Self.helperStartSeconds)) { try await self.nextRaw() }
+        guard let f = try await withTimeout(max(timeout, Self.helperStartSeconds), { try await self.nextRaw() }) else {
+            throw Failure("The capture helper stopped before sending a frame.")
+        }
+        return f
     }
 
-    private func withTimeout(_ seconds: Double, _ body: @escaping @Sendable () async throws -> SourceFrame?) async throws -> SourceFrame {
-        try await withThrowingTaskGroup(of: SourceFrame?.self) { g in
-            g.addTask { try await body() }
+    /// The body's result, or `CaptureError.noFrames` if `seconds` pass first.
+    /// A nil result (the stream ended) is returned as nil, not as a timeout.
+    private func withTimeout(_ seconds: Double, _ body: @escaping @Sendable () async throws -> SourceFrame?) async throws -> SourceFrame? {
+        try await withThrowingTaskGroup(of: Raced.self) { g in
+            g.addTask { .frame(try await body()) }
             g.addTask {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
-                return nil
+                return .timedOut
             }
             defer { g.cancelAll() }
-            guard let r = try await g.next(), let value = r else {
-                throw CaptureError.noFrames(seconds: seconds)
+            switch try await g.next() {
+            case .frame(let f)?: return f
+            case .timedOut?, nil: throw CaptureError.noFrames(seconds: seconds)
             }
-            return value
         }
     }
 
@@ -216,6 +224,7 @@ func runSystem(command: String, opts: Options) async throws -> Int32 {
         defer { source.shutdown() }
         let ui = RemotePrompter(source: source, verbose: opts.verbose)
         say("Enrolling \(ctx.user) for sudo. Only the built-in camera is used.")
+        say("Starting the camera… If macOS asks whether Terminal may use the camera, click Allow.")
         return try await runEnroll(ui: ui, source: source, modelID: embedder.modelID) { e in
             try store.save(e)
             secureRootOwned(store.directory.path)
@@ -227,6 +236,7 @@ func runSystem(command: String, opts: Options) async throws -> Int32 {
         let source = RemoteSource(executable: exe, ctx: ctx, dimension: dim, hud: false)
         defer { source.shutdown() }
         say("Calibrating \(ctx.user)'s sudo enrollment.")
+        say("Starting the camera… If macOS asks whether Terminal may use the camera, click Allow.")
         return try await runCalibrate(source: source, enrollment: enrollment,
                                       previous: (try? store.loadConfig())?.verify, modelID: embedder.modelID,
                                       fixedThreshold: opts.threshold) { c in

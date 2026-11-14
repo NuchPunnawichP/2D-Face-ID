@@ -68,7 +68,7 @@ if gui {
 
 @MainActor
 func main() async -> Int32 {
-    let ui = UI(hud: gui ? NotchHUD.make() : nil, verbose: opts.verbose)
+    let ui = UI(hud: gui ? NotchHUD.make() : nil, verbose: opts.verbose, echo: opts.command != "capture-helper")
     let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
     do {
         if opts.system {

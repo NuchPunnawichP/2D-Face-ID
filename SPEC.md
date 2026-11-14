@@ -224,6 +224,41 @@ The enroll HUD shows "Snap n/5" with the pose instruction and five progress dots
 | R30 | The README threat model states what revision 4 closes (data tampering by processes running as the user) and what remains (control of the verifier process, a physical or replayed face in front of the camera, and the revision 3 limits). | Review | — | README |
 | R31 | Under `sudo` (`--store-fd`) and with `--system`, only the built-in camera is used, with no fallback to the default, external, Continuity or virtual cameras; if there is no built-in camera, exit 2. | Unit test of the device-selection rule, using a fake device list | A list with only an external camera | Test output |
 
+## First live run and bug fixes (2026-11-14)
+**Live finding (assumptions A2/A6).** The first real `sudo faceauth enroll --system` failed with:
+
+> The application with bundle ID dev.local.faceauth is running setugid(), which is not allowed. Exiting.
+
+Every process started through `sudo` counts as setugid (`issetugid()`), and AppKit refuses to run in one.
+- The capture helper, and the sudo verifier, could therefore not show the HUD.
+- Worse, AppKit then exits the process with a code we don't control, and the verifier's exit code is the verdict.
+- No enrollment had been saved, so the PAM module never started a verifier: no bypass was possible.
+
+**Fixes** (commit `a490ccc`, then this one):
+- AppKit is never started in a setugid process (`HUDPolicy`, also checked in `NotchHUD.make`). Under sudo, prompts appear in Terminal. This is R16's text fallback.
+- **Status:** A2 and A6 are **false for the HUD**. Whether the camera works in a setugid process is still **unknown** until the next live enroll.
+- **R14** (HUD during sudo) is **not met**. Restoring it needs a revision (revision 5, proposed separately): a display-only process that launchd starts in the user's session.
+
+**Code review (high effort, branch vs main), 8 findings:**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Camera timestamps were assumed to be on the host clock | **Fixed:** converted from the session clock via `CMSyncConvertTime`; arrival time is used if the conversion is missing or more than 1 s off |
+| 2 | The helper's 10 s start limit included the camera-permission dialog | **Fixed:** 60 s, and a prompt to click Allow |
+| 3 | Prompts printed twice during `--system` | **Fixed:** the helper no longer echoes |
+| 4 | No notch HUD under sudo | **Open:** needs revision 5 |
+| 5 | Camera check also ran for non-interactive sudo (scripts, askpass) | **Fixed:** the module requires a terminal `PAM_TTY`; otherwise AUTH_ERR without starting the verifier. 3 new PAM checks, 30/30 passing. |
+| 6 | A clean end of the helper stream was reported as a timeout | **Fixed** |
+| 7 | The setup app showed "Installed" without the compiled model | **Fixed:** the binary, module and `.mlmodelc` must all exist |
+| 8 | Camera notification observers were never removed | **Fixed** |
+
+**Checks after the fixes:**
+- `./scripts/test.sh`: 103 tests passed.
+- `make -C pam test`: 30/30 passed.
+- `formal/verify_model.py`: exit 0.
+- `self-test`: OK.
+- Both DMGs rebuilt; `hdiutil verify` reports VALID.
+
 ## Packaging note — faceauth.app (2026-11-14)
 On your request ("just build an app.dmg"), a setup app was added without a separate spec revision. It does not change any requirement above:
 - `FaceAuthSetup` (faceauth.app) only opens Terminal with the existing commands (`SetupStep`): `sudo -s`, `install.sh`, `enroll --system`, `calibrate --system`, `sudo -k; sudo true` and `uninstall.sh`.

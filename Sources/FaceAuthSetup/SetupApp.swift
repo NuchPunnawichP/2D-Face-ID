@@ -45,8 +45,10 @@ struct InstallStatus {
     static func current() -> InstallStatus {
         let line = (try? String(contentsOfFile: "/etc/pam.d/sudo_local", encoding: .utf8))?
             .contains("pam_faceauth.so") ?? false
-        return InstallStatus(binaryInstalled: FileManager.default.fileExists(atPath: "/usr/local/libexec/faceauth"),
-                             pamLine: line)
+        let fm = FileManager.default
+        let files = ["/usr/local/libexec/faceauth", "/usr/local/lib/pam/pam_faceauth.so",
+                     "/usr/local/share/faceauth/MobileFaceNet.mlmodelc"]
+        return InstallStatus(binaryInstalled: files.allSatisfy { fm.fileExists(atPath: $0) }, pamLine: line)
     }
 
     var summary: String {

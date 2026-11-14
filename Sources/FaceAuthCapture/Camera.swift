@@ -57,6 +57,7 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     /// Set when the session failed or was interrupted.
     public private(set) var failure: String?
     private var stopped = false
+    private var observers: [NSObjectProtocol] = []
 
     /// Asks for camera permission if needed. Throws if access is not granted.
     public static func ensurePermission() async throws {
@@ -127,14 +128,14 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         // A runtime error or interruption ends the stream; callers treat an
         // early end as a camera error (exit 2).
         for name in [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.wasInterruptedNotification] {
-            NotificationCenter.default.addObserver(forName: name, object: session, queue: nil) { [weak self] n in
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: session, queue: nil) { [weak self] n in
                 guard let self else { return }
                 self.queue.async {
                     self.failure = (n.userInfo?[AVCaptureSessionErrorKey] as? Error)?.localizedDescription ?? "camera interrupted"
                     self.continuation?.finish()
                     self.continuation = nil
                 }
-            }
+            })
         }
         queue.async { self.session.startRunning() }
         return stream
@@ -147,6 +148,20 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             continuation?.finish()
             continuation = nil
         }
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+    }
+
+    /// The frame's capture time on the host clock, which every timer here uses.
+    /// The presentation timestamp is converted from the session's clock; if
+    /// that is unavailable or implausible (more than 1 s from now), the time
+    /// of arrival is used instead.
+    static func hostTime(of sb: CMSampleBuffer, sessionClock: CMClock?) -> Double {
+        let now = HostClock.now()
+        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+        guard pts.isValid, let clock = sessionClock else { return now }
+        let t = CMSyncConvertTime(pts, from: clock, to: CMClockGetHostTimeClock()).seconds
+        return t.isFinite && abs(t - now) <= 1.0 ? t : now
     }
 
     /// True when the stream ended without `stop()` being called.
@@ -155,7 +170,6 @@ public final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                               from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-        continuation?.yield(CameraFrame(pixelBuffer: pb, time: t.isFinite ? t : HostClock.now()))
+        continuation?.yield(CameraFrame(pixelBuffer: pb, time: Self.hostTime(of: sampleBuffer, sessionClock: session.synchronizationClock)))
     }
 }

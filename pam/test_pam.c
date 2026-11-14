@@ -49,11 +49,14 @@ static int conv(int n, const struct pam_message **m, struct pam_response **r, vo
     (void)n; (void)m; (void)r; (void)d; return PAM_CONV_ERR;
 }
 
+static const char *test_tty = "/dev/ttys000";
+
 static int auth_with(const char *stub, int timeout) {
     struct passwd *pw = getpwuid(getuid());
     struct pam_conv c = { conv, NULL };
     pam_handle_t *pamh = NULL;
     if (pam_start("faceauth-test", pw->pw_name, &c, &pamh) != PAM_SUCCESS) return -999;
+    if (test_tty != NULL) pam_set_item(pamh, PAM_TTY, test_tty);
     char p[700], s[700], t[32];
     snprintf(p, sizeof p, "path=%s", stub);
     snprintf(s, sizeof s, "store=%s", store);
@@ -184,6 +187,16 @@ int main(int argc, char **argv) {
     unlink(ran);
     CHECK(auth_with(secho, 10) == PAM_AUTH_ERR && !exists(ran), "store root mode 0755 -> PAM_AUTH_ERR, verifier not started");
     reset_store();
+
+    /* Non-interactive sudo (no PAM_TTY, or not a terminal): the verifier is not started. */
+    reset_store();
+    test_tty = NULL; unlink(ran);
+    CHECK(auth_with(secho, 10) == PAM_AUTH_ERR && !exists(ran), "no PAM_TTY (script/askpass) -> PAM_AUTH_ERR, verifier not started");
+    test_tty = "unknown"; unlink(ran);
+    CHECK(auth_with(secho, 10) == PAM_AUTH_ERR && !exists(ran), "PAM_TTY not a terminal -> PAM_AUTH_ERR, verifier not started");
+    test_tty = "/dev/ttys000";
+    CHECK(faceauth_tty_ok("/dev/ttys003") && faceauth_tty_ok("ttys003") && !faceauth_tty_ok("") && !faceauth_tty_ok(NULL),
+          "terminal name check");
 
     /* Status mapping. */
     CHECK(faceauth_status_to_pam(0) == PAM_SUCCESS, "status 0 maps to success");

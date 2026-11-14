@@ -94,11 +94,14 @@ options:
 final class UI: @unchecked Sendable {
     let hud: NotchHUD?
     let verbose: Bool
+    /// Print prompts to stderr. Off in the capture helper: root prints them.
+    let echo: Bool
     let start = HostClock.now()
 
-    init(hud: NotchHUD?, verbose: Bool) {
+    init(hud: NotchHUD?, verbose: Bool, echo: Bool = true) {
         self.hud = hud
         self.verbose = verbose
+        self.echo = echo
     }
 
     func log(_ s: String) {
@@ -106,7 +109,7 @@ final class UI: @unchecked Sendable {
     }
 
     func show(_ state: HUDState) {
-        say(state.text)
+        if echo { say(state.text) }
         guard let hud else { return }
         DispatchQueue.main.async {
             if hud.isShown { hud.update(state) } else {
@@ -118,7 +121,7 @@ final class UI: @unchecked Sendable {
 
     /// Shows the final state, waits for the HUD to collapse, then returns.
     func finish(_ state: HUDState) async {
-        say(state.text)
+        if echo { say(state.text) }
         guard let hud else { return }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.main.async {

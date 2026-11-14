@@ -81,6 +81,13 @@ int faceauth_check_binary(const char *path) {
     return 0;
 }
 
+/* True for a terminal name sudo would set as PAM_TTY ("/dev/ttys003" or "ttys003"). */
+int faceauth_tty_ok(const char *tty) {
+    if (tty == NULL || tty[0] == '\0') return 0;
+    return strncmp(tty, "/dev/tty", 8) == 0 || strncmp(tty, "tty", 3) == 0 ||
+           strncmp(tty, "/dev/console", 12) == 0;
+}
+
 /* Maps the verifier's wait status to a PAM result: only a clean exit 0 succeeds. */
 int faceauth_status_to_pam(int status) {
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return PAM_SUCCESS;
@@ -244,6 +251,13 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
 
     const char *user = NULL;
     if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || user == NULL || user[0] == '\0')
+        return PAM_AUTH_ERR;
+
+    /* Only with a terminal: sudo sets PAM_TTY when it has one. Scripts, cron
+     * and GUI askpass have none, so the camera is not started for them and
+     * they fall straight through to the next module. */
+    const void *tty = NULL;
+    if (pam_get_item(pamh, PAM_TTY, &tty) != PAM_SUCCESS || !faceauth_tty_ok((const char *)tty))
         return PAM_AUTH_ERR;
 
     struct passwd pwbuf, *pw = NULL;
