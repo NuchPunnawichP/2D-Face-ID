@@ -1,0 +1,155 @@
+import FaceAuthCapture
+import FaceAuthCore
+import Foundation
+
+/// Scores collected over one calibration phase.
+struct PhaseScores {
+    var frameScores: [Double] = []   // single frame vs. enrolled mean
+    var meanScores: [Double] = []    // rolling 3-frame mean (what verify uses)
+    var motionScores: [Double] = []
+    var blink = false
+    var yaws: [Double] = []
+}
+
+func collect(_ source: FrameSource, _ e: Enrollment, seconds: Double) async throws -> PhaseScores {
+    var p = PhaseScores()
+    var gate = FrameGate()
+    var motion = MotionCheck()
+    var blink = BlinkDetector()
+    var recent: [[Float]] = []
+    let start = HostClock.now()
+    let end = start + seconds
+    while HostClock.now() < end {
+        guard let sf = try await source.next() else { break }
+        let f = sf.frame
+        // Frames captured before this phase (e.g. buffered while waiting for Return) don't count.
+        guard f.time >= start, gate.check(f) == .valid else { continue }
+        if let y = f.yawDegrees { p.yaws.append(y) }
+        motion.add(f)
+        if let m = motion.lastScore { p.motionScores.append(m) }
+        if let ear = EyeAspectRatio.both(left: f.leftEye, right: f.rightEye), blink.add(ear: ear) { p.blink = true }
+        if let yaw = f.yawDegrees, let pitch = f.pitchDegrees, abs(yaw) <= 15, abs(pitch) <= 15,
+           let emb = try sf.embed() {
+            if let s = Embeddings.cosine(emb, e.mean) { p.frameScores.append(s) }
+            recent.append(emb)
+            if recent.count > 3 { recent.removeFirst() }
+            if recent.count == 3, let sc = MatchDecision.scores(probe: recent, enrollment: e) {
+                p.meanScores.append(min(sc.meanScore, sc.bestIndividualScore))
+            }
+        }
+    }
+    return p
+}
+
+func fmt(_ xs: [Double], digits: Int = 3) -> String {
+    guard let s = xs.stats else { return "n=0" }
+    let f = "%.\(digits)f"
+    return "n=\(xs.count)  min \(String(format: f, s.min))  median \(String(format: f, s.median))  max \(String(format: f, s.max))"
+}
+
+/// Plain `faceauth calibrate`: the local camera and the user store.
+func runLocalCalibrate(ui: UI, fixedThreshold: Double?) async throws -> Int32 {
+    let store = EnrollmentStore(directory: EnrollmentStore.defaultDirectory)
+    let embedder = try Embedder.load()
+    let enrollment = try store.loadEnrollment(expectedModelID: embedder.modelID, expectedDimension: embedder.dimension)
+    return try await runCalibrate(source: LocalSource(embedder: embedder), enrollment: enrollment,
+                                  previous: (try? store.loadConfig())?.verify, modelID: embedder.modelID,
+                                  fixedThreshold: fixedThreshold) { c in
+        try store.save(c)
+        return store.configURL.path
+    }
+}
+
+/// Measures live and photo scores from `source` and saves the chosen config with `save`.
+func runCalibrate(source: FrameSource, enrollment: Enrollment, previous: VerifyConfig?, modelID: String,
+                  fixedThreshold: Double?, save: (FaceAuthConfig) throws -> String) async throws -> Int32 {
+    if fixedThreshold == nil && !isTTY() {
+        throw Failure("calibrate needs a terminal to ask for the threshold, or pass --threshold X.")
+    }
+    try await source.start()
+    defer { source.stop() }
+    _ = try await source.first(timeout: 3)
+
+    await waitForReturn("Step 1/3: look at the camera, move naturally and blink a few times for 5 s.")
+    let live = try await collect(source, enrollment, seconds: 5)
+
+    await waitForReturn("Step 2/3: turn your head to YOUR LEFT and hold it for 3 s.")
+    let turn = try await collect(source, enrollment, seconds: 3)
+
+    await waitForReturn("Step 3/3: hold your phone with a PHOTO of your face in front of the camera for 5 s (move it around a little).")
+    let photo = try await collect(source, enrollment, seconds: 5)
+    source.stop()
+
+    // R13: at least 20 frames per phase, or the numbers mean little.
+    for (name, phase) in [("live", live), ("photo", photo)] where phase.frameScores.count < 20 {
+        throw Failure("Only \(phase.frameScores.count) usable frontal frames in the \(name) step (need 20). Improve the lighting, face the camera, and run calibrate again.")
+    }
+    print("""
+
+    Similarity to your enrollment (cosine; higher = more similar)
+      live you,  single frame: \(fmt(live.frameScores))
+      live you,  3-frame mean: \(fmt(live.meanScores))
+      photo,     single frame: \(fmt(photo.frameScores))
+      photo,     3-frame mean: \(fmt(photo.meanScores))
+    Liveness signals
+      live  motion score: \(fmt(live.motionScores, digits: 4))   blink seen: \(live.blink)
+      photo motion score: \(fmt(photo.motionScores, digits: 4))   blink seen: \(photo.blink)
+    """)
+
+    // Head-turn sign: which way does Vision's yaw go when you turn left?
+    var verify = previous ?? VerifyConfig()
+    if let extreme = turn.yaws.max(by: { abs($0) < abs($1) }), abs(extreme) >= 15 {
+        verify.turn.leftYawSign = extreme > 0 ? 1 : -1
+        print(String(format: "  turning left gives yaw %+.1f°, so leftYawSign = %+.0f", extreme, verify.turn.leftYawSign))
+    } else {
+        say("Warning: the left turn was too small to measure (|yaw| < 15°); keeping leftYawSign = \(verify.turn.leftYawSign).")
+    }
+
+    // Motion threshold: between the photo's highest and the live median, if they separate.
+    if let pm = photo.motionScores.stats?.max, let lm = live.motionScores.stats?.median {
+        if pm < lm {
+            verify.motion.minScore = min(0.1, max(0.001, (pm * lm).squareRoot()))
+            print(String(format: "  motion threshold set to %.4f (photo max %.4f < live median %.4f)", verify.motion.minScore, pm, lm))
+        } else {
+            say(String(format: "Warning: the photo moved as much as your live face (photo max %.4f ≥ live median %.4f). Keeping motion threshold %.4f. Blink and head-turn checks still apply.", pm, lm, verify.motion.minScore))
+        }
+    }
+
+    // A face match alone cannot tell you from a photo of you; liveness does that.
+    // Suggest a threshold a little under your lowest live 3-frame score,
+    // and not below the model's LFW operating point (≈0.34).
+    let liveMin = live.meanScores.stats?.min ?? 0.5
+    let suggested = max(0.34, ((liveMin - 0.05) * 100).rounded() / 100)
+    print("""
+
+    The photo scores show that a photo of you matches your face, as expected:
+    the threshold separates you from other people, and liveness (blink, head
+    turn, motion) separates you from a photo.
+    Suggested threshold: \(String(format: "%.2f", suggested))
+    """)
+
+    let chosen: Double
+    if let t = fixedThreshold {
+        chosen = t
+    } else {
+        say("Enter threshold [\(String(format: "%.2f", suggested))]: ", terminator: false)
+        let line = readLine()?.trimmingCharacters(in: .whitespaces) ?? ""
+        if line.isEmpty { chosen = suggested }
+        else if let v = Double(line) { chosen = v }
+        else { throw Failure("Not a valid threshold: \(line)") }
+    }
+    guard FaceAuthConfig.thresholdRange.contains(chosen) else {
+        throw Failure("The threshold must be between \(FaceAuthConfig.thresholdRange.lowerBound) and \(FaceAuthConfig.thresholdRange.upperBound).")
+    }
+    let config = FaceAuthConfig(threshold: chosen, modelID: modelID, verify: verify)
+    let bad = config.invalidSettings()
+    guard bad.isEmpty else { throw Failure("Calibration produced out-of-range settings: \(bad.joined(separator: ", "))") }
+    let path = try save(config)
+    print("Saved threshold \(String(format: "%.3f", chosen)) to \(path) (mode 600).")
+    print("Record this value in the README under \"Threshold I chose\".")
+    return Exit.match
+}
+
+func say(_ s: String, terminator: Bool) {
+    FileHandle.standardError.write(Data((s + (terminator ? "\n" : "")).utf8))
+}
